@@ -18,6 +18,10 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Build debug APK and run tests
+        env:
+          # Секреты подставляются только в приватном репозитории, чтобы ключи не попали в открытый APK
+          YANDEX_API_KEY: ${{ github.event.repository.private && secrets.YANDEX_API_KEY || '' }}
+          YANDEX_FOLDER_ID: ${{ github.event.repository.private && secrets.YANDEX_FOLDER_ID || '' }}
         run: ./gradlew assembleDebug testDebugUnitTest
       - uses: actions/upload-artifact@v4
         with:

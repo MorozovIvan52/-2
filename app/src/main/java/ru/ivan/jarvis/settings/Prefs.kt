@@ -1,6 +1,7 @@
 package ru.ivan.jarvis.settings
 
 import android.content.Context
+import ru.ivan.jarvis.BuildConfig
 import java.time.LocalDate
 
 /** Все настройки приложения в одном месте (SharedPreferences). */
@@ -21,8 +22,8 @@ class Prefs(context: Context) {
     var yandexVoice: String get() = str("yandex_voice", "ermil"); set(v) = setStr("yandex_voice", v)
 
     // ИИ (YandexGPT)
-    var apiKey: String get() = str("api_key", ""); set(v) = setStr("api_key", v.trim())
-    var folderId: String get() = str("folder_id", ""); set(v) = setStr("folder_id", v.trim())
+    var apiKey: String get() = str("api_key", BuildConfig.YANDEX_API_KEY); set(v) = setStr("api_key", v.trim())
+    var folderId: String get() = str("folder_id", BuildConfig.YANDEX_FOLDER_ID); set(v) = setStr("folder_id", v.trim())
     var aiOn: Boolean get() = bool("ai_on", true); set(v) = setBool("ai_on", v)
     var dailyTokenLimit: Int get() = p.getInt("daily_limit", 20000); set(v) = p.edit().putInt("daily_limit", v).apply()
     val yandexReady: Boolean get() = apiKey.isNotBlank() && folderId.isNotBlank()
