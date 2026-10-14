@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Джарвис</string>
+    <string name="channel_reminders">Напоминания</string>
+    <string name="channel_reminders_desc">Уведомления о делах и событиях</string>
+    <string name="action_done">Готово</string>
+    <string name="action_snooze">Через 10 мин</string>
+    <string name="shortcut_listen">Голосовая команда</string>
+</resources>

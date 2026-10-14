@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_mic"
+        android:shortcutId="listen"
+        android:shortcutShortLabel="@string/shortcut_listen">
+        <intent
+            android:action="ru.ivan.jarvis.LISTEN"
+            android:targetClass="ru.ivan.jarvis.ui.MainActivity"
+            android:targetPackage="ru.ivan.jarvis" />
+    </shortcut>
+</shortcuts>
