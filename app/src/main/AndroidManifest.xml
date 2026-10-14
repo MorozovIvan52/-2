@@ -54,6 +54,10 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>
+                <action android:name="ru.ivan.jarvis.WHAT_NOW" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
                 <action android:name="android.intent.action.ASSIST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
@@ -73,6 +77,22 @@
         <receiver
             android:name=".focus.FocusReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".briefing.BriefingReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.JarvisWidget"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_jarvis_info" />
+        </receiver>
 
         <service
             android:name=".JarvisTile"

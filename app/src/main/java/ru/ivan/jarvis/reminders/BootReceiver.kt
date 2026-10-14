@@ -33,6 +33,8 @@ class BootReceiver : BroadcastReceiver() {
                     }
                     ReminderScheduler.schedule(context, current)
                 }
+                ru.ivan.jarvis.briefing.Briefing.scheduleAll(context)
+                ru.ivan.jarvis.widget.JarvisWidget.update(context)
             } finally {
                 pending.finish()
             }

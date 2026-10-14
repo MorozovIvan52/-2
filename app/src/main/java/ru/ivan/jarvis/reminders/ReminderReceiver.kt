@@ -56,12 +56,14 @@ class ReminderReceiver : BroadcastReceiver() {
                         NotificationManagerCompat.from(context).cancel(id.toInt())
                         ReminderScheduler.cancelSnooze(context, id)
                         if (item.repeat == Repeat.NONE) dao.update(item.copy(done = true))
+                        Prefs(context).markDone()
                     }
                     ReminderScheduler.ACTION_SNOOZE -> {
                         NotificationManagerCompat.from(context).cancel(id.toInt())
                         ReminderScheduler.snooze(context, id)
                     }
                 }
+                ru.ivan.jarvis.widget.JarvisWidget.update(context)
             } finally {
                 pending.finish()
             }

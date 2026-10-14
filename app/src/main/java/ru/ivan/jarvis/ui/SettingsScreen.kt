@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import ru.ivan.jarvis.briefing.Briefing
 import ru.ivan.jarvis.settings.KeyImport
 import ru.ivan.jarvis.voice.YandexTts
 
@@ -59,6 +60,11 @@ fun SettingsScreen(vm: MainViewModel) {
     var limit by remember { mutableStateOf(prefs.dailyTokenLimit.toString()) }
     var nag by remember { mutableStateOf(prefs.nag) }
     var breakMin by remember { mutableIntStateOf(prefs.breakMinutes) }
+    var dialog by remember { mutableStateOf(prefs.dialog) }
+    var morningOn by remember { mutableStateOf(prefs.morningOn) }
+    var morningHour by remember { mutableIntStateOf(prefs.morningHour) }
+    var eveningOn by remember { mutableStateOf(prefs.eveningOn) }
+    var eveningHour by remember { mutableIntStateOf(prefs.eveningHour) }
 
     fun open(intent: Intent) = runCatching { context.startActivity(intent) }
 
@@ -165,6 +171,16 @@ fun SettingsScreen(vm: MainViewModel) {
         }
 
         Section("Помощь с вниманием") {
+            Text(
+                "Сделано сегодня: ${prefs.doneToday} · всего: ${prefs.doneTotal}" +
+                    (if (prefs.streak > 1) " · серия ${prefs.streak} дн." else ""),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SwitchRow("Режим диалога (после ответа снова слушаю)", dialog) { dialog = it; prefs.dialog = it }
+            SwitchRow("Утренний план дня", morningOn) { morningOn = it; prefs.morningOn = it; Briefing.scheduleAll(context) }
+            if (morningOn) HourChips(listOf(7, 8, 9, 10), morningHour) { morningHour = it; prefs.morningHour = it; Briefing.scheduleAll(context) }
+            SwitchRow("Вечерние итоги", eveningOn) { eveningOn = it; prefs.eveningOn = it; Briefing.scheduleAll(context) }
+            if (eveningOn) HourChips(listOf(19, 20, 21, 22), eveningHour) { eveningHour = it; prefs.eveningHour = it; Briefing.scheduleAll(context) }
             SwitchRow("Настойчивые напоминания (повтор каждые 10 мин до «Готово»)", nag) { nag = it; prefs.nag = it }
             Text("Перерыв после фокуса", style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -184,6 +200,13 @@ private fun Section(title: String, content: @Composable () -> Unit) {
             Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             content()
         }
+    }
+}
+
+@Composable
+private fun HourChips(hours: List<Int>, selected: Int, onPick: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        hours.forEach { h -> FilterChip(selected = selected == h, onClick = { onPick(h) }, label = { Text("$h:00") }) }
     }
 }
 

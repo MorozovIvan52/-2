@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,11 +31,24 @@ class Speaker(context: Context, private val prefs: Prefs) : TextToSpeech.OnInitL
     /** Русские голоса системного синтезатора, лучшие первыми. */
     val voices: StateFlow<List<Voice>> = _voices
 
+    /** Вызывается на главном потоке, когда фраза договорена до конца. */
+    var onDone: (() -> Unit)? = null
+
+    private fun finished() {
+        scope.launch { onDone?.invoke() }
+    }
+
     val engineName: String get() = runCatching { tts.defaultEngine }.getOrNull().orEmpty()
 
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) return
         ready = true
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) = finished()
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {}
+        })
         _voices.value = runCatching { tts.voices?.toList() }.getOrNull().orEmpty()
             .filter { it.locale.language == "ru" && !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
             .sortedWith(compareByDescending<Voice> { it.quality }.thenBy { it.isNetworkConnectionRequired }.thenBy { it.name })
@@ -75,7 +89,7 @@ class Speaker(context: Context, private val prefs: Prefs) : TextToSpeech.OnInitL
                     .build()
             )
             setDataSource(path)
-            setOnCompletionListener { it.release(); if (player === it) player = null }
+            setOnCompletionListener { it.release(); if (player === it) player = null; finished() }
             prepare()
             start()
         }

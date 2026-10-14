@@ -19,6 +19,7 @@ class JarvisApp : Application() {
             enableVibration(true)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        runCatching { ru.ivan.jarvis.briefing.Briefing.scheduleAll(this) }
     }
 
     companion object {

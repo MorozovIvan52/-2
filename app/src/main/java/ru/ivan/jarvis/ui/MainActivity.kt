@@ -73,11 +73,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.action in setOf(ACTION_LISTEN, Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND)) listenRequests++
+        when (intent?.action) {
+            ACTION_LISTEN, Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND -> listenRequests++
+            ACTION_WHAT_NOW -> vm.sayWhatNow()
+        }
     }
 
     companion object {
         const val ACTION_LISTEN = "ru.ivan.jarvis.LISTEN"
+        const val ACTION_WHAT_NOW = "ru.ivan.jarvis.WHAT_NOW"
     }
 }
 
@@ -131,6 +135,12 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
     }
     LaunchedEffect(listenRequests) {
         if (listenRequests > 0) onMic()
+    }
+    // Режим диалога: после голосового ответа снова слушаем
+    LaunchedEffect(vm.listenAgain) {
+        if (vm.listenAgain > 0 && vm.voice.available &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) { tab = Tab.HOME; vm.voice.start() }
     }
 
     Scaffold(

@@ -24,6 +24,11 @@ import ru.ivan.jarvis.parse.ActionParser
 import ru.ivan.jarvis.parse.Command
 import ru.ivan.jarvis.parse.CommandParser
 import ru.ivan.jarvis.parse.PhoneAction
+import ru.ivan.jarvis.parse.TaskEdit
+import ru.ivan.jarvis.parse.TaskEditParser
+import ru.ivan.jarvis.parse.TaskMatcher
+import ru.ivan.jarvis.widget.JarvisWidget
+import androidx.core.app.NotificationManagerCompat
 import ru.ivan.jarvis.reminders.ReminderScheduler
 import ru.ivan.jarvis.settings.Prefs
 import ru.ivan.jarvis.voice.Speaker
@@ -31,7 +36,7 @@ import ru.ivan.jarvis.voice.VoiceInput
 import java.time.LocalDate
 
 /** Ответ Джарвиса на последнюю команду. itemId — чтобы можно было отменить. */
-data class Feedback(val text: String, val itemId: Long? = null)
+data class Feedback(val text: String, val itemId: Long? = null, val restore: Item? = null)
 
 /** Запрос разрешений, после которого команду надо повторить. */
 data class PermissionAsk(val permissions: List<String>, val retry: () -> Unit)
@@ -49,7 +54,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val items: StateFlow<List<Item>> =
         dao.observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val voice = VoiceInput(app) { handle(it) }
+    val voice = VoiceInput(app) { handleVoice(it) }
 
     var feedback by mutableStateOf<Feedback?>(null)
         private set
@@ -61,12 +66,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var focus by mutableStateOf(FocusState())
         private set
+    /** Растёт, когда после голосового ответа нужно снова слушать (режим диалога). */
+    var listenAgain by mutableStateOf(0)
+        private set
+
+    private var fromVoice = false
+    private var continueAfterSpeech = false
 
     /** Последний обмен с ИИ — передаётся только если был недавно (экономия токенов). */
     private var lastExchange: Triple<String, String, Long>? = null
 
     init {
         refreshFocus()
+        speaker.onDone = {
+            if (continueAfterSpeech) {
+                continueAfterSpeech = false
+                listenAgain++
+            }
+        }
+        viewModelScope.launch { items.collect { JarvisWidget.update(appContext) } }
     }
 
     fun toggleSpeak() {
@@ -79,37 +97,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         feedback = null
     }
 
-    private fun answer(text: String, itemId: Long? = null, speak: Boolean = true) {
-        feedback = Feedback(text, itemId)
-        if (speakEnabled && speak) speaker.say(text)
+    /** followUp — в режиме диалога после ответа снова включить микрофон. */
+    private fun answer(text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false, restore: Item? = null) {
+        feedback = Feedback(text, itemId, restore)
+        val willSpeak = speakEnabled && speak
+        continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && (followUp || text.trimEnd().endsWith("?"))
+        if (willSpeak) speaker.say(text)
+    }
+
+    fun sayWhatNow() {
+        fromVoice = false
+        answer(whatNow())
     }
 
     /** Главная точка: распознанная или набранная фраза. */
-    fun handle(text: String) = handleInternal(text, afterPermission = false)
+    fun handle(text: String) {
+        fromVoice = false
+        handleInternal(text, afterPermission = false)
+    }
+
+    private fun handleVoice(text: String) {
+        fromVoice = true
+        handleInternal(text, afterPermission = false)
+    }
 
     private fun handleInternal(text: String, afterPermission: Boolean) {
         if (text.isBlank()) return
+        if (STOP_DIALOG.matches(text.trim().lowercase())) {
+            fromVoice = false
+            answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random())
+            return
+        }
         // 1. Команды управления телефоном — бесплатно, на устройстве
         ActionParser.parse(text)?.let { action ->
             runAction(text, action, afterPermission)
             return
         }
+        // 2. Правка дел: «сделал…», «перенеси…», «удали…», «итоги дня»
+        TaskEditParser.parse(text)?.let { edit ->
+            viewModelScope.launch { applyEdit(edit) }
+            return
+        }
         viewModelScope.launch {
-            // 2. Вопросы и сложные просьбы — ИИ (если подключён)
+            // 3. Вопросы и сложные просьбы — ИИ (если подключён)
             if (prefs.aiOn && prefs.yandexReady && Assistant.shouldAsk(text) &&
                 (CommandParser.parse(text) as? Command.Save)?.due == null
             ) {
                 askAi(text)
                 return@launch
             }
-            // 3. Заметки, напоминания, «что у меня завтра»
+            // 4. Заметки, напоминания, «что у меня завтра»
             saveOrQuery(text)
         }
     }
 
     private fun runAction(text: String, action: PhoneAction, afterPermission: Boolean) {
         when (action) {
-            PhoneAction.Help -> answer(HELP)
+            PhoneAction.Help -> answer(HELP, followUp = true)
             PhoneAction.WhatNow -> answer(whatNow())
             is PhoneAction.Focus -> {
                 Focus.start(appContext, action.minutes)
@@ -179,7 +223,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             messages += "user" to it.first.take(300)
             messages += "assistant" to it.second.take(300)
         }
-        messages += "user" to text
+        messages += "user" to (text + todayContext(text))
         val result = gpt.complete(messages)
         thinking = false
         val raw = result.text
@@ -197,7 +241,83 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             1 -> " Записал."
             else -> " Записал шагов: ${parsed.commands.size}."
         }
-        answer((parsed.speech.ifBlank { "Готово." } + extra).trim())
+        answer((parsed.speech.ifBlank { "Готово." } + extra).trim(), followUp = parsed.commands.isEmpty())
+    }
+
+    /** Для вопросов о планах — коротко передаём ИИ дела на сегодня (до 6 штук). */
+    private fun todayContext(text: String): String {
+        if (!PLAN_WORDS.containsMatchIn(text)) return ""
+        val today = LocalDate.now()
+        val list = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.occursOn(today) }
+            .sortedBy { it.dueAt }.take(6)
+        if (list.isEmpty()) return "\n(На сегодня дел нет)"
+        return "\n(Мои дела сегодня: " + list.joinToString("; ") {
+            if (it.allDay) it.title else "${timeOf(it)} ${it.title}"
+        } + ")"
+    }
+
+    private suspend fun applyEdit(e: TaskEdit) {
+        val all = dao.all()
+        val open = all.filter { !it.done }
+        when (e) {
+            TaskEdit.Summary -> answer(summary(all), followUp = true)
+            TaskEdit.Notes -> {
+                val notes = all.filter { it.type == ItemType.NOTE && !it.done }.take(5)
+                answer(if (notes.isEmpty()) "Заметок пока нет." else "Последние заметки: " + notes.joinToString("; ") { it.title })
+            }
+            is TaskEdit.Done -> {
+                val item = pick(e.query, open) ?: return notFound(e.query)
+                ReminderScheduler.cancelSnooze(appContext, item.id)
+                NotificationManagerCompat.from(appContext).cancel(item.id.toInt())
+                if (item.repeat == ru.ivan.jarvis.data.Repeat.NONE) {
+                    ReminderScheduler.cancel(appContext, item.id)
+                    dao.update(item.copy(done = true))
+                }
+                val n = prefs.markDone()
+                val streak = prefs.streak.takeIf { it > 1 }?.let { " Серия $it дн. подряд." } ?: ""
+                answer("${PRAISE.random()} «${item.title}» сделано. Сегодня уже $n.$streak")
+            }
+            is TaskEdit.Delete -> {
+                val item = (if (e.query.isBlank()) all.firstOrNull() else pick(e.query, all)) ?: return notFound(e.query)
+                ReminderScheduler.cancel(appContext, item.id)
+                dao.delete(item)
+                answer("Удалил: ${item.title}", itemId = item.id, restore = item)
+            }
+            is TaskEdit.Move -> {
+                val item = pick(e.query, open) ?: return notFound(e.query)
+                val moved = item.copy(type = ItemType.REMINDER, dueAt = e.due.toMillis(), allDay = e.allDay, done = false)
+                ReminderScheduler.cancelSnooze(appContext, item.id)
+                NotificationManagerCompat.from(appContext).cancel(item.id.toInt())
+                dao.update(moved)
+                ReminderScheduler.schedule(appContext, moved)
+                answer("Перенёс ${describeDue(moved)}: ${moved.title}")
+            }
+        }
+    }
+
+    private fun notFound(query: String) =
+        answer(if (query.isBlank()) "Не понял, о каком деле речь. Назовите его." else "Не нашёл дело «$query». Скажите точнее?", followUp = true)
+
+    /** Пустой запрос — самое актуальное напоминание: последнее сработавшее или ближайшее. */
+    private fun pick(query: String, candidates: List<Item>): Item? {
+        if (query.isBlank()) {
+            val now = System.currentTimeMillis()
+            val rem = candidates.filter { it.type == ItemType.REMINDER && it.dueAt != null }
+            return rem.filter { it.dueAt!! <= now }.maxByOrNull { it.dueAt!! } ?: rem.minByOrNull { it.dueAt!! }
+        }
+        val id = TaskMatcher.best(query, candidates.map { it.id to it.title }) ?: return null
+        return candidates.first { it.id == id }
+    }
+
+    private fun summary(all: List<Item>): String {
+        val n = prefs.doneToday
+        val today = LocalDate.now()
+        val now = System.currentTimeMillis()
+        val left = all.filter { it.type == ItemType.REMINDER && !it.done && it.occursOn(today) && (it.allDay || it.dueAt!! >= now) }
+        val head = if (n == 0) "Сегодня пока ничего не отмечено как сделанное." else "Сегодня сделано: $n. ${PRAISE.random()}"
+        val streak = prefs.streak.takeIf { it > 1 }?.let { " Серия $it дн. подряд." } ?: ""
+        val tail = if (left.isEmpty()) " На сегодня больше ничего нет." else " Осталось: " + left.take(3).joinToString("; ") { it.title } + "."
+        return head + streak + tail
     }
 
     /** «Что мне сейчас делать?» — одна главная задача, без перегруза. */
@@ -231,7 +351,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopFocus() = runAction("", PhoneAction.FocusStop, false)
 
     fun undo() {
-        val id = feedback?.itemId ?: return
+        val fb = feedback ?: return
+        fb.restore?.let { item ->
+            viewModelScope.launch {
+                dao.insert(item)
+                ReminderScheduler.schedule(appContext, item)
+                feedback = Feedback("Вернул: ${item.title}")
+            }
+            return
+        }
+        val id = fb.itemId ?: return
         viewModelScope.launch {
             dao.get(id)?.let { delete(it) }
             feedback = Feedback("Отменено")
@@ -252,7 +381,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun toggleDone(item: Item) = save(item.copy(done = !item.done))
+    fun toggleDone(item: Item) {
+        if (!item.done) prefs.markDone()
+        save(item.copy(done = !item.done))
+    }
 
     override fun onCleared() {
         voice.destroy()
@@ -262,6 +394,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val HELP = "Я умею: записывать заметки и напоминания, открывать приложения, звонить, писать SMS, " +
             "ставить будильник и таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
-            "Для работы: «фокус 25 минут» и «что мне сейчас делать». С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги."
+            "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
+            "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
+        private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
+        private val PLAN_WORDS = Regex("(план|день|дня|задач|дела|успеть|приоритет|расписани)", RegexOption.IGNORE_CASE)
+        private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")
     }
 }

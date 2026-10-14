@@ -12,6 +12,9 @@ interface ItemDao {
     @Query("SELECT * FROM items ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<Item>>
 
+    @Query("SELECT * FROM items ORDER BY createdAt DESC")
+    suspend fun all(): List<Item>
+
     @Query("SELECT * FROM items WHERE id = :id")
     suspend fun get(id: Long): Item?
 
