@@ -113,3 +113,19 @@ class AssistantTest {
         assertEquals(listOf("запиши шаг 1: открыть файл", "напомни через 20 минут сделать перерыв"), p.commands)
     }
 }
+
+class KeyImportTest {
+    @Test fun parsesEnvBlock() {
+        val k = ru.ivan.jarvis.settings.KeyImport.parse(
+            "YANDEX_API_KEY=AQVNtestKEY_abc-1234567890xyz\nYANDEX_API_KEY_ID=ajeX\n\nYANDEX_FOLDER_ID=b1gabcdefghijklmnopq\nYC_S3_SECRET_KEY=zzz"
+        )
+        assertEquals("AQVNtestKEY_abc-1234567890xyz", k.apiKey)
+        assertEquals("b1gabcdefghijklmnopq", k.folderId)
+    }
+
+    @Test fun nothing() {
+        val k = ru.ivan.jarvis.settings.KeyImport.parse("привет")
+        assertNull(k.apiKey)
+        assertNull(k.folderId)
+    }
+}

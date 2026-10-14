@@ -1,5 +1,6 @@
 package ru.ivan.jarvis.ui
 
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import ru.ivan.jarvis.settings.KeyImport
 import ru.ivan.jarvis.voice.YandexTts
 
 @Composable
@@ -60,6 +62,20 @@ fun SettingsScreen(vm: MainViewModel) {
 
     fun open(intent: Intent) = runCatching { context.startActivity(intent) }
 
+    var importMsg by remember { mutableStateOf<String?>(null) }
+    fun importFromClipboard() {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        val text = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+        val keys = KeyImport.parse(text)
+        keys.apiKey?.let { apiKey = it; prefs.apiKey = it }
+        keys.folderId?.let { folderId = it; prefs.folderId = it }
+        importMsg = when {
+            keys.apiKey != null && keys.folderId != null -> "Ключи вставлены, ИИ готов"
+            keys.apiKey != null || keys.folderId != null -> "Вставлено частично, проверьте поля"
+            else -> "В буфере нет ключей. Скопируйте сообщение с YANDEX_API_KEY и YANDEX_FOLDER_ID"
+        }
+    }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -71,6 +87,10 @@ fun SettingsScreen(vm: MainViewModel) {
                 "Включается только для вопросов и сложных просьб. Обычные команды работают бесплатно и без интернета.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            OutlinedButton(onClick = { importFromClipboard() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Вставить ключи из буфера")
+            }
+            importMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
             OutlinedTextField(
                 value = apiKey, onValueChange = { apiKey = it; prefs.apiKey = it },
                 label = { Text("API-ключ Yandex Cloud") }, singleLine = true,
