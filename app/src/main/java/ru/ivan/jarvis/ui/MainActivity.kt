@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -66,8 +67,13 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        vm.refreshFocus()
+    }
+
     private fun handleIntent(intent: Intent?) {
-        if (intent?.action == ACTION_LISTEN) listenRequests++
+        if (intent?.action in setOf(ACTION_LISTEN, Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND)) listenRequests++
     }
 
     companion object {
@@ -75,7 +81,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { HOME("Джарвис"), CALENDAR("Календарь"), NOTES("Заметки") }
+private enum class Tab(val label: String) { HOME("Джарвис"), CALENDAR("Календарь"), NOTES("Заметки"), SETTINGS("Настройки") }
 
 @Composable
 private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
@@ -108,6 +114,15 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
         }
     }
 
+    // Разрешения для звонков/контактов запрашиваются в момент первой такой команды
+    val actionPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        vm.onPermissionsResult()
+    }
+    val ask = vm.permissionAsk
+    LaunchedEffect(ask) {
+        if (ask != null) actionPermissions.launch(ask.permissions.toTypedArray())
+    }
+
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -131,6 +146,7 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                                     Tab.HOME -> Icons.Filled.Mic
                                     Tab.CALENDAR -> Icons.Filled.CalendarMonth
                                     Tab.NOTES -> Icons.Filled.EditNote
+                                    Tab.SETTINGS -> Icons.Filled.Settings
                                 },
                                 contentDescription = null,
                             )
@@ -141,7 +157,7 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
             }
         },
         floatingActionButton = {
-            if (tab != Tab.HOME) {
+            if (tab == Tab.CALENDAR || tab == Tab.NOTES) {
                 FloatingActionButton(onClick = {
                     editing = if (tab == Tab.CALENDAR) {
                         Item(type = ItemType.REMINDER, title = "", dueAt = selectedDay.atTime(9, 0).toMillis())
@@ -165,6 +181,10 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     onToggleSpeak = vm::toggleSpeak,
                     onEdit = { editing = it },
                     onToggleDone = vm::toggleDone,
+                    focus = vm.focus,
+                    onStartFocus = vm::startFocus,
+                    onStopFocus = vm::stopFocus,
+                    onRefreshFocus = vm::refreshFocus,
                 )
                 Tab.CALENDAR -> CalendarScreen(
                     items = items,
@@ -174,6 +194,7 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     onToggleDone = vm::toggleDone,
                 )
                 Tab.NOTES -> NotesScreen(items = items, onEdit = { editing = it }, onToggleDone = vm::toggleDone)
+                Tab.SETTINGS -> SettingsScreen(vm)
             }
         }
     }

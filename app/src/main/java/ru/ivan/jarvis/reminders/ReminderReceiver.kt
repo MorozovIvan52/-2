@@ -19,6 +19,7 @@ import ru.ivan.jarvis.data.Repeat
 import ru.ivan.jarvis.data.nextOccurrence
 import ru.ivan.jarvis.data.toLocalDateTime
 import ru.ivan.jarvis.data.toMillis
+import ru.ivan.jarvis.settings.Prefs
 import ru.ivan.jarvis.ui.MainActivity
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -44,10 +45,16 @@ class ReminderReceiver : BroadcastReceiver() {
                                 ReminderScheduler.schedule(context, updated)
                             }
                         }
+                        nagAgain(context, item, 1)
                     }
-                    ReminderScheduler.ACTION_SNOOZE_FIRE -> show(context, item)
+                    ReminderScheduler.ACTION_SNOOZE_FIRE -> {
+                        if (item.done) return@launch
+                        show(context, item)
+                        nagAgain(context, item, intent.getIntExtra(ReminderScheduler.EXTRA_NAG, 0) + 1)
+                    }
                     ReminderScheduler.ACTION_DONE -> {
                         NotificationManagerCompat.from(context).cancel(id.toInt())
+                        ReminderScheduler.cancelSnooze(context, id)
                         if (item.repeat == Repeat.NONE) dao.update(item.copy(done = true))
                     }
                     ReminderScheduler.ACTION_SNOOZE -> {
@@ -59,6 +66,11 @@ class ReminderReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+
+    /** Настойчивый режим: повторять каждые 10 минут, пока не нажали «Готово». */
+    private fun nagAgain(context: Context, item: Item, nag: Int) {
+        if (Prefs(context).nag && nag <= ReminderScheduler.MAX_NAGS) ReminderScheduler.snooze(context, item.id, 10, nag)
     }
 
     private fun show(context: Context, item: Item) {

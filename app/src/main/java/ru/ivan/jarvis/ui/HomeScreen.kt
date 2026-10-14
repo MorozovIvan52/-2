@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -27,19 +28,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,16 +58,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import ru.ivan.jarvis.data.Item
 import ru.ivan.jarvis.data.ItemType
 import ru.ivan.jarvis.voice.VoiceState
 
 private val examples = listOf(
     "Напомни завтра в 9 позвонить врачу",
-    "Через 20 минут выключить духовку",
-    "Каждый понедельник в 10 планёрка",
-    "Запиши идею: подарок маме",
-    "Что у меня завтра?",
+    "Что мне сейчас делать?",
+    "Фокус 25 минут",
+    "Открой Телеграм",
+    "Разбуди меня в 7",
+    "Поставь таймер на 10 минут",
+    "Включи фонарик",
+    "Как перестать откладывать дела?",
+    "Что ты умеешь?",
 )
 
 @Composable
@@ -75,6 +87,10 @@ fun HomeScreen(
     onToggleSpeak: () -> Unit,
     onEdit: (Item) -> Unit,
     onToggleDone: (Item) -> Unit,
+    focus: FocusState = FocusState(),
+    onStartFocus: (Int) -> Unit = {},
+    onStopFocus: () -> Unit = {},
+    onRefreshFocus: () -> Unit = {},
 ) {
     val now = System.currentTimeMillis()
     val upcoming = items
@@ -140,6 +156,7 @@ fun HomeScreen(
                 },
             )
         }
+        item { FocusCard(focus, onStartFocus, onStopFocus, onRefreshFocus, onAsk = onText) }
         if (feedback != null) item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -216,6 +233,67 @@ private fun MicButton(listening: Boolean, level: Float, onClick: () -> Unit) {
                 tint = if (listening) MaterialTheme.colorScheme.onPrimary else accent,
                 modifier = Modifier.size(48.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun FocusCard(
+    focus: FocusState,
+    onStart: (Int) -> Unit,
+    onStop: () -> Unit,
+    onRefresh: () -> Unit,
+    onAsk: (String) -> Unit,
+) {
+    if (focus.phase.isEmpty()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { onStart(25) }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Timer, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Фокус 25 мин")
+            }
+            OutlinedButton(onClick = { onAsk("что мне сейчас делать") }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Lightbulb, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Что делать?")
+            }
+        }
+        return
+    }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(focus) {
+        while (true) {
+            now = System.currentTimeMillis()
+            if (now >= focus.endAt) {
+                delay(1500)
+                onRefresh()
+            }
+            delay(1000)
+        }
+    }
+    val left = ((focus.endAt - now) / 1000).coerceAtLeast(0)
+    val isWork = focus.phase == "work"
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isWork) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(if (isWork) "Фокус" else "Перерыв", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "%d:%02d".format(left / 60, left % 60),
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    if (isWork) "Одна задача. Телефон — только для неё." else "Встаньте, разомнитесь, попейте воды.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onStop) { Text("Стоп") }
         }
     }
 }

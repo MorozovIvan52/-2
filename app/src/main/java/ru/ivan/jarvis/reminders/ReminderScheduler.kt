@@ -15,13 +15,23 @@ object ReminderScheduler {
     const val ACTION_DONE = "ru.ivan.jarvis.DONE"
     const val ACTION_SNOOZE = "ru.ivan.jarvis.SNOOZE"
     const val EXTRA_ID = "id"
+    const val EXTRA_NAG = "nag"
+    /** Сколько раз повторять напоминание, пока не нажали «Готово». */
+    const val MAX_NAGS = 6
 
     fun itemUri(id: Long): Uri = Uri.parse("jarvis://item/$id")
 
-    private fun pending(context: Context, id: Long, action: String, flags: Int = PendingIntent.FLAG_UPDATE_CURRENT): PendingIntent? =
+    private fun pending(
+        context: Context,
+        id: Long,
+        action: String,
+        flags: Int = PendingIntent.FLAG_UPDATE_CURRENT,
+        nag: Int = 0,
+    ): PendingIntent? =
         PendingIntent.getBroadcast(
             context, 0,
-            Intent(context, ReminderReceiver::class.java).setAction(action).setData(itemUri(id)).putExtra(EXTRA_ID, id),
+            Intent(context, ReminderReceiver::class.java).setAction(action).setData(itemUri(id))
+                .putExtra(EXTRA_ID, id).putExtra(EXTRA_NAG, nag),
             flags or PendingIntent.FLAG_IMMUTABLE,
         )
 
@@ -33,8 +43,15 @@ object ReminderScheduler {
         setAlarm(context, at, pending(context, item.id, ACTION_FIRE)!!)
     }
 
-    fun snooze(context: Context, id: Long, minutes: Int = 10) {
-        setAlarm(context, System.currentTimeMillis() + minutes * 60_000L, pending(context, id, ACTION_SNOOZE_FIRE)!!)
+    fun snooze(context: Context, id: Long, minutes: Int = 10, nag: Int = 0) {
+        setAlarm(context, System.currentTimeMillis() + minutes * 60_000L, pending(context, id, ACTION_SNOOZE_FIRE, nag = nag)!!)
+    }
+
+    fun cancelSnooze(context: Context, id: Long) {
+        pending(context, id, ACTION_SNOOZE_FIRE, PendingIntent.FLAG_NO_CREATE)?.let {
+            context.getSystemService(AlarmManager::class.java).cancel(it)
+            it.cancel()
+        }
     }
 
     fun cancel(context: Context, id: Long) {
