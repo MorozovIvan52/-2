@@ -20,6 +20,7 @@ class JarvisApp : Application() {
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         runCatching { ru.ivan.jarvis.briefing.Briefing.scheduleAll(this) }
+        ru.ivan.jarvis.alarm.JarvisAlarm.ensureChannel(this)
     }
 
     companion object {

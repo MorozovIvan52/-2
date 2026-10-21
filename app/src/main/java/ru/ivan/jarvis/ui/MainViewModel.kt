@@ -28,6 +28,9 @@ import ru.ivan.jarvis.parse.TaskEdit
 import ru.ivan.jarvis.parse.TaskEditParser
 import ru.ivan.jarvis.parse.TaskMatcher
 import ru.ivan.jarvis.widget.JarvisWidget
+import ru.ivan.jarvis.calendar.CalendarSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.core.app.NotificationManagerCompat
 import ru.ivan.jarvis.reminders.ReminderScheduler
 import ru.ivan.jarvis.settings.Prefs
@@ -185,18 +188,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun saveOrQuery(text: String, announce: Boolean = true): String {
         return when (val c = CommandParser.parse(text)) {
             is Command.Save -> {
+                // «запиши в календарь …» без даты — событие на сегодня, весь день
+                val toCalendar = c.due == null && text.contains("календар", ignoreCase = true)
                 val item = Item(
-                    type = c.type,
+                    type = if (toCalendar) ItemType.REMINDER else c.type,
                     title = c.title,
                     source = text,
-                    dueAt = c.due?.toMillis(),
-                    allDay = c.allDay,
+                    dueAt = if (toCalendar) LocalDate.now().atTime(9, 0).toMillis() else c.due?.toMillis(),
+                    allDay = toCalendar || c.allDay,
                     repeat = c.repeat,
                 )
                 val saved = item.copy(id = dao.insert(item))
                 ReminderScheduler.schedule(appContext, saved)
+                val inCalendar = syncCal(saved)
                 val msg = if (saved.type == ItemType.NOTE) "Записал в заметки: ${saved.title}"
-                else "Напомню ${describeDue(saved)}: ${saved.title}"
+                else "Напомню ${describeDue(saved)}: ${saved.title}" + if (inCalendar) ". Добавил в календарь" else ""
                 if (announce) answer(msg, saved.id)
                 msg
             }
@@ -204,11 +210,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val days = (0 until c.days).map { c.from.plusDays(it.toLong()) }
                 val found = items.value
                     .filter { it.type == ItemType.REMINDER && !it.done && days.any { d -> it.occursOn(d) } }
-                    .sortedBy { it.dueAt!!.toLocalDateTime().toLocalTime() }
-                val msg = if (found.isEmpty()) "На ${c.label} ничего не запланировано."
-                else "На ${c.label}: " + found.joinToString("; ") {
-                    if (it.allDay) it.title else "в ${timeOf(it)} ${it.title}"
-                }
+                    .map { (if (it.allDay) "" else "в ${timeOf(it)} ") + it.title to it.dueAt!!.toLocalDateTime().toLocalTime() }
+                // Плюс события из календаря телефона (встречи, дни рождения из Google)
+                val phone = withContext(Dispatchers.IO) { CalendarSync.events(appContext, c.from, c.days) }
+                    .map { e ->
+                        val t = e.begin.toLocalDateTime().toLocalTime()
+                        (if (e.allDay) "" else "в %d:%02d ".format(t.hour, t.minute)) + e.title to (if (e.allDay) java.time.LocalTime.MIN else t)
+                    }
+                val all = (found + phone).sortedBy { it.second }.map { it.first }.distinct()
+                val msg = if (all.isEmpty()) "На ${c.label} ничего не запланировано."
+                else "На ${c.label}: " + all.joinToString("; ")
                 if (announce) answer(msg)
                 msg
             }
@@ -281,6 +292,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val item = (if (e.query.isBlank()) all.firstOrNull() else pick(e.query, all)) ?: return notFound(e.query)
                 ReminderScheduler.cancel(appContext, item.id)
                 dao.delete(item)
+                unsyncCal(item.id)
                 answer("Удалил: ${item.title}", itemId = item.id, restore = item)
             }
             is TaskEdit.Move -> {
@@ -290,9 +302,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 NotificationManagerCompat.from(appContext).cancel(item.id.toInt())
                 dao.update(moved)
                 ReminderScheduler.schedule(appContext, moved)
+                syncCal(moved)
                 answer("Перенёс ${describeDue(moved)}: ${moved.title}")
             }
         }
+    }
+
+    /** Дублирует напоминание в календарь телефона; при первом разе просит доступ. */
+    private suspend fun syncCal(item: Item): Boolean {
+        if (!prefs.calendarSync || item.type != ItemType.REMINDER) return false
+        if (!CalendarSync.granted(appContext)) {
+            if (!prefs.calendarAsked) {
+                prefs.calendarAsked = true
+                permissionAsk = PermissionAsk(CalendarSync.PERMISSIONS) { syncAllToCalendar() }
+            }
+            return false
+        }
+        return withContext(Dispatchers.IO) { CalendarSync.upsert(appContext, item) }
+    }
+
+    private suspend fun unsyncCal(id: Long) = withContext(Dispatchers.IO) { CalendarSync.delete(appContext, id) }
+
+    /** Перенести все будущие напоминания в календарь телефона (после выдачи доступа). */
+    fun syncAllToCalendar() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!CalendarSync.granted(appContext)) return@launch
+            val now = System.currentTimeMillis()
+            val list = dao.all().filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null && (it.dueAt >= now || it.repeat != ru.ivan.jarvis.data.Repeat.NONE) }
+            val n = list.count { CalendarSync.upsert(appContext, it) }
+            if (n > 0) withContext(Dispatchers.Main) { feedback = Feedback("В календарь телефона добавлено: $n") }
+        }
+    }
+
+    /** Запросить доступ к календарю из настроек. */
+    fun requestCalendar() {
+        permissionAsk = PermissionAsk(CalendarSync.PERMISSIONS) { syncAllToCalendar() }
     }
 
     private fun notFound(query: String) =
@@ -356,6 +400,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch {
                 dao.insert(item)
                 ReminderScheduler.schedule(appContext, item)
+                syncCal(item)
                 feedback = Feedback("Вернул: ${item.title}")
             }
             return
@@ -371,6 +416,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val saved = if (item.id == 0L) item.copy(id = dao.insert(item)) else item.also { dao.update(it) }
             ReminderScheduler.schedule(appContext, saved)
+            syncCal(saved)
         }
     }
 
@@ -378,6 +424,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             ReminderScheduler.cancel(appContext, item.id)
             dao.delete(item)
+            unsyncCal(item.id)
         }
     }
 
@@ -392,8 +439,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        const val HELP = "Я умею: записывать заметки и напоминания, открывать приложения, звонить, писать SMS, " +
-            "ставить будильник и таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
+        const val HELP = "Я умею: записывать заметки и напоминания (они попадают и в календарь телефона), ставить будильник на любое время и по будням, открывать приложения, звонить, писать SMS, " +
+            "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")

@@ -142,16 +142,38 @@ class PhoneController(private val context: Context) {
 
     private fun alarm(a: PhoneAction.Alarm): Result {
         if (a.hour == null) {
-            return if (start(Intent(AlarmClock.ACTION_SHOW_ALARMS))) Result("Открываю будильники")
-            else Result("Не нашёл приложение часов")
+            return if (start(Intent(AlarmClock.ACTION_SHOW_ALARMS))) Result("Открываю будильники. Скажите время, например «будильник на 7».")
+            else Result("Во сколько разбудить? Скажите, например, «будильник на 7».")
         }
-        val intent = Intent(AlarmClock.ACTION_SET_ALARM)
-            .putExtra(AlarmClock.EXTRA_HOUR, a.hour)
-            .putExtra(AlarmClock.EXTRA_MINUTES, a.minute)
-            .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-        if (a.label.isNotBlank()) intent.putExtra(AlarmClock.EXTRA_MESSAGE, a.label)
         val time = "%d:%02d".format(a.hour, a.minute)
-        return if (start(intent)) Result("Будильник на $time") else Result("Не получилось поставить будильник")
+        val daysText = daysText(a.days)
+        // Конкретная дата системным часам не передаётся — тогда ставим свой будильник
+        val own = a.date != null || ru.ivan.jarvis.settings.Prefs(context).alarmOwn
+        if (!own) {
+            val intent = Intent(AlarmClock.ACTION_SET_ALARM)
+                .putExtra(AlarmClock.EXTRA_HOUR, a.hour)
+                .putExtra(AlarmClock.EXTRA_MINUTES, a.minute)
+                .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            if (a.label.isNotBlank()) intent.putExtra(AlarmClock.EXTRA_MESSAGE, a.label)
+            if (a.days.isNotEmpty()) intent.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, ArrayList(a.days.map { it.value % 7 + 1 }))
+            if (start(intent)) return Result("Будильник на $time$daysText поставлен в часах")
+        }
+        val at = ru.ivan.jarvis.alarm.JarvisAlarm.set(context, a.hour, a.minute, a.date, a.days, a.label)
+            ?: return Result("Это время уже прошло. Скажите другое.")
+        val day = when (at.toLocalDate()) {
+            java.time.LocalDate.now() -> "сегодня"
+            java.time.LocalDate.now().plusDays(1) -> "завтра"
+            else -> at.format(java.time.format.DateTimeFormatter.ofPattern("d MMMM", java.util.Locale("ru")))
+        }
+        return Result("Будильник Джарвиса на $time$daysText, ближайший $day")
+    }
+
+    private fun daysText(days: List<java.time.DayOfWeek>): String = when {
+        days.isEmpty() -> ""
+        days.size == 7 -> " каждый день"
+        days == java.time.DayOfWeek.entries.take(5) -> " по будням"
+        days == java.time.DayOfWeek.entries.takeLast(2) -> " по выходным"
+        else -> ""
     }
 
     private fun timer(seconds: Int): Result {

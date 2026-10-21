@@ -80,4 +80,10 @@ class Prefs(context: Context) {
             .putLong("done_total", doneTotal + 1).putInt("streak", newStreak).apply()
         return n
     }
+
+    // Будильник и календарь телефона
+    /** true — свой будильник Джарвиса вместо приложения «Часы». */
+    var alarmOwn: Boolean get() = bool("alarm_own", false); set(v) = setBool("alarm_own", v)
+    var calendarSync: Boolean get() = bool("calendar_sync", true); set(v) = setBool("calendar_sync", v)
+    var calendarAsked: Boolean get() = bool("calendar_asked", false); set(v) = setBool("calendar_asked", v)
 }

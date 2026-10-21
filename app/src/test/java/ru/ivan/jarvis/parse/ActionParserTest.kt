@@ -34,6 +34,18 @@ class ActionParserTest {
         assertEquals(PhoneAction.Alarm(null, 0, ""), p("будильник"))
     }
 
+    @Test fun alarmSmart() {
+        val all = java.time.DayOfWeek.entries
+        assertEquals(PhoneAction.Alarm(7, 0, ""), p("Джарвис, поставь, пожалуйста, будильник на 7"))
+        assertEquals(PhoneAction.Alarm(7, 0, ""), p("поставь будильник на завтра на 7 утра"))
+        assertEquals(PhoneAction.Alarm(6, 45, ""), p("мне нужно встать в 6:45"))
+        assertEquals(PhoneAction.Alarm(7, 0, "", days = all.take(5)), p("поставь будильник на 7 по будням"))
+        assertEquals(PhoneAction.Alarm(9, 30, "", days = all.takeLast(2)), p("будильник по выходным в 9:30"))
+        // 14.10.2026 — среда; пятница — не ближайшие сутки
+        assertEquals(PhoneAction.Alarm(8, 0, "", date = java.time.LocalDate.of(2026, 10, 16)), p("разбуди меня в пятницу в 8"))
+        assertEquals(PhoneAction.Alarm(22, 0, ""), p("будильник на 10 вечера"))
+    }
+
     @Test fun timer() {
         assertEquals(PhoneAction.Timer(600), p("поставь таймер на 10 минут"))
         assertEquals(PhoneAction.Timer(1800), p("таймер полчаса"))

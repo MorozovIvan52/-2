@@ -12,7 +12,14 @@ sealed interface PhoneAction {
     data class Call(val target: String) : PhoneAction
     data class Sms(val target: String, val text: String) : PhoneAction
     /** hour == null — просто открыть будильники. */
-    data class Alarm(val hour: Int?, val minute: Int, val label: String) : PhoneAction
+    /** date — конкретный день, если это не ближайшие сутки; days — повтор по дням недели. */
+    data class Alarm(
+        val hour: Int?,
+        val minute: Int,
+        val label: String,
+        val date: java.time.LocalDate? = null,
+        val days: List<java.time.DayOfWeek> = emptyList(),
+    ) : PhoneAction
     data class Timer(val seconds: Int) : PhoneAction
     data class Flashlight(val on: Boolean) : PhoneAction
     data class Volume(val change: VolumeChange) : PhoneAction
@@ -59,7 +66,11 @@ object ActionParser {
     private val music = rx("^(включи|поставь|сыграй|играй|воспроизведи)\\s+(музыку|песню|трек|альбом|плейлист)$R\\s*(.*)$")
     private val musicVerb = rx("^(сыграй|воспроизведи)\\s+(.+)$")
     private val timer = rx("^(поставь\\s+|заведи\\s+|установи\\s+|запусти\\s+)?(таймер|засеки)$R\\s*(.*)$")
-    private val alarm = rx("^(разбуди(\\s+меня)?|(поставь|заведи|установи)\\s+будильник|будильник)$R\\s*(.*)$")
+    private val alarm = rx("^(разбуди(\\s+меня)?|подними\\s+меня|(поставь|заведи|установи|включи|создай|сделай)\\s+(мне\\s+)?будильник|будильник|(мне\\s+)?(надо|нужно)\\s+(встать|проснуться))$R\\s*(.*)$")
+    private val please = rx("[\\s,]*(пожалуйста|плиз)[\\s,]*")
+    private val weekdaysRx = rx("(по\\s+будням|в\\s+будни|по\\s+рабочим(\\s+дням)?|в\\s+рабочие\\s+дни)")
+    private val weekendRx = rx("(по\\s+выходным|в\\s+выходные)")
+    private val everyDayRx = rx("(каждый\\s+день|ежедневно|всегда|каждое\\s+утро)")
     private val call = rx("^(позвони|набери|вызови|звонок)$R\\s+(.+)$")
     private val sms = rx("^(напиши|отправь)\\s+(смс|sms|эсэмэс|эсэмэску|смску|сообщение)$R\\s*(.+)$")
     private val navigate = rx("^(проложи\\s+маршрут|построй\\s+маршрут|маршрут|как\\s+(доехать|добраться|пройти)|навигатор|отвези\\s+меня|поехали)$R\\s*(до|в|к|на)?\\s*(.+)$")
@@ -69,7 +80,8 @@ object ActionParser {
     private val openApp = rx("^(открой|запусти|включи|зайди\\s+в|перейди\\s+в)\\s+(приложение\\s+)?(.+)$")
 
     fun parse(raw: String, now: LocalDateTime = LocalDateTime.now()): PhoneAction? {
-        val s = wake.replace(raw.trim().replace('ё', 'е').replace('Ё', 'Е'), "").trim().trimEnd('.', '!', '?', ' ')
+        val s = wake.replace(raw.trim().replace('ё', 'е').replace('Ё', 'Е'), "").replace(please, " ")
+            .trim().trimEnd('.', '!', '?', ' ').replace(Regex("\\s+"), " ")
         if (s.isEmpty()) return null
         val l = s.lowercase()
 
@@ -96,7 +108,7 @@ object ActionParser {
         musicVerb.find(s)?.let { return PhoneAction.PlayMusic(it.groupValues[2].trim()) }
 
         timer.find(s)?.let { m -> parseDuration(m.groupValues[3])?.let { return PhoneAction.Timer(it) } }
-        alarm.find(s)?.let { m -> return parseAlarm(m.groupValues[4], now) }
+        alarm.find(s)?.let { m -> return parseAlarm(m.groupValues.last(), now) }
 
         call.find(s)?.let { m ->
             // «позвони маме завтра в 9» — это напоминание, а не звонок сейчас
@@ -148,15 +160,30 @@ object ActionParser {
     }
 
     private fun parseAlarm(rest: String, now: LocalDateTime): PhoneAction.Alarm {
-        // «на 7:30» → «в 7:30», чтобы разбор времени его понял
-        val text = rest.trim().replace(rx("^на\\s+(?=\\d)"), "в ").replace(rx("(^|\\s)на\\s+(?=\\d)"), " в ")
-        if (text.isEmpty()) return PhoneAction.Alarm(null, 0, "")
+        var text = rest.trim()
+        val days = mutableListOf<java.time.DayOfWeek>()
+        fun cut(r: Regex, d: List<java.time.DayOfWeek>) {
+            if (r.containsMatchIn(text)) { days += d; text = text.replace(r, " ").trim() }
+        }
+        val all = java.time.DayOfWeek.entries
+        cut(weekdaysRx, all.take(5))
+        cut(weekendRx, all.takeLast(2))
+        if (days.isEmpty()) cut(everyDayRx, all)
+        // «на 7:30» → «в 7:30», «на завтра на 7» → «завтра в 7»
+        text = text.replace(rx("(^|\\s)на\\s+(?=(завтра|послезавтра|сегодня))"), " ")
+            .replace(rx("(^|\\s)на\\s+(?=\\d)"), " в ").trim()
+        if (text.isEmpty()) return PhoneAction.Alarm(null, 0, "", days = days)
         val save = CommandParser.parse(text, now) as? Command.Save
-        val due = save?.due ?: return PhoneAction.Alarm(null, 0, "")
+        val due = save?.due ?: return PhoneAction.Alarm(null, 0, "", days = days)
         val label = save.title.takeIf { it != "Напоминание" && it != "Заметка" } ?: ""
         // «в 6» без уточнения для будильника — скорее утро
         val hour = if (!rx("(вечера|дня|ночи|вечером|днем)").containsMatchIn(text) && due.hour in 13..18) due.hour - 12 else due.hour
-        return PhoneAction.Alarm(hour, due.minute, label)
+        val time = java.time.LocalTime.of(hour, due.minute)
+        // Часы сами ставят на ближайшее такое время; дату передаём, только если это другой день
+        val nearest = if (time.isAfter(now.toLocalTime())) now.toLocalDate() else now.toLocalDate().plusDays(1)
+        val explicitDay = rx("(сегодня|завтра|послезавтра|понедельник|вторник|сред|четверг|пятниц|суббот|воскресень|числа|\\d+\\.\\d+|январ|феврал|март|апрел|ма[яй]|июн|июл|август|сентябр|октябр|ноябр|декабр)").containsMatchIn(text)
+        val date = if (days.isEmpty() && explicitDay && due.toLocalDate() != nearest) due.toLocalDate() else null
+        return PhoneAction.Alarm(hour, due.minute, label, date, days)
     }
 
     private fun parseSms(rest: String): PhoneAction.Sms {

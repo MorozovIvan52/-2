@@ -61,6 +61,9 @@ fun SettingsScreen(vm: MainViewModel) {
     var nag by remember { mutableStateOf(prefs.nag) }
     var breakMin by remember { mutableIntStateOf(prefs.breakMinutes) }
     var dialog by remember { mutableStateOf(prefs.dialog) }
+    var calSync by remember { mutableStateOf(prefs.calendarSync) }
+    var alarmOwn by remember { mutableStateOf(prefs.alarmOwn) }
+    val calGranted = ru.ivan.jarvis.calendar.CalendarSync.granted(context)
     var morningOn by remember { mutableStateOf(prefs.morningOn) }
     var morningHour by remember { mutableIntStateOf(prefs.morningHour) }
     var eveningOn by remember { mutableStateOf(prefs.eveningOn) }
@@ -115,6 +118,23 @@ fun SettingsScreen(vm: MainViewModel) {
             )
             Text(
                 "Сегодня: ${prefs.tokensToday} токенов · всего: ${prefs.tokensTotal} · озвучено Яндексом: ${prefs.ttsCharsTotal} симв.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Section("Календарь и будильник") {
+            SwitchRow("Дублировать напоминания в календарь телефона", calSync) {
+                calSync = it; prefs.calendarSync = it
+                if (it) vm.requestCalendar()
+            }
+            if (calSync && !calGranted) {
+                OutlinedButton(onClick = { vm.requestCalendar() }, modifier = Modifier.fillMaxWidth()) { Text("Дать доступ к календарю") }
+            } else if (calSync) {
+                OutlinedButton(onClick = { vm.syncAllToCalendar() }, modifier = Modifier.fillMaxWidth()) { Text("Перенести все дела в календарь") }
+            }
+            SwitchRow("Свой будильник Джарвиса (вместо приложения «Часы»)", alarmOwn) { alarmOwn = it; prefs.alarmOwn = it }
+            Text(
+                "Будильник на конкретную дату («разбуди в пятницу в 8») всегда ставится свой — часы такое не умеют.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
