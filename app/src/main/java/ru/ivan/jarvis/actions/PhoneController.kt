@@ -31,12 +31,20 @@ class PhoneController(private val context: Context) {
         val message: String,
         val missingPermissions: List<String> = emptyList(),
         val speak: Boolean = true,
+        /** Сообщение готово к отправке — Джарвис переспросит «Отправить?». */
+        val pendingSms: PendingSms? = null,
+        /** Команда угадана неверно (нет такого контакта) — обработать фразу как задачу. */
+        val fallThrough: Boolean = false,
     )
+
+    data class PendingSms(val number: String, val who: String, val text: String, val app: String)
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
 
+    /** Запускаем из открытого экрана Джарвиса — так надёжнее (Xiaomi и др. блокируют запуск из фона). */
     private fun start(intent: Intent): Boolean = try {
-        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val activity = ru.ivan.jarvis.JarvisApp.currentActivity
+        if (activity != null) activity.startActivity(intent) else context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         true
     } catch (e: ActivityNotFoundException) {
         false
@@ -48,7 +56,7 @@ class PhoneController(private val context: Context) {
     fun perform(action: PhoneAction, canAsk: Boolean): Result = when (action) {
         is PhoneAction.OpenApp -> openApp(action.name)
         is PhoneAction.Call -> call(action.target, canAsk)
-        is PhoneAction.Sms -> sms(action.target, action.text, canAsk)
+        is PhoneAction.Sms -> sms(action, canAsk)
         is PhoneAction.Alarm -> alarm(action)
         is PhoneAction.Timer -> timer(action.seconds)
         is PhoneAction.Flashlight -> flashlight(action.on)
@@ -64,13 +72,34 @@ class PhoneController(private val context: Context) {
         PhoneAction.Help, PhoneAction.WhatNow, PhoneAction.FocusStop, is PhoneAction.Focus -> Result("")
     }
 
-    private fun openApp(name: String): Result {
+    private var appsCache: List<Pair<String, String>>? = null
+    private var appsCacheAt = 0L
+
+    /** Установленные приложения (подпись, пакет); кэш на минуту. */
+    fun installedApps(): List<Pair<String, String>> {
+        appsCache?.takeIf { System.currentTimeMillis() - appsCacheAt < 60_000 }?.let { return it }
         val pm = context.packageManager
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(launcher, 0)
             .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
             .filter { it.second != context.packageName }
-        val pkg = AppMatcher.best(name, apps) ?: return Result("Не нашёл приложение «$name»")
+            .distinctBy { it.second }
+        appsCache = apps
+        appsCacheAt = System.currentTimeMillis()
+        return apps
+    }
+
+    /** Есть ли приложение с таким названием (для команды из одного слова: «телеграм»). */
+    fun hasApp(name: String): Boolean = AppMatcher.best(name, installedApps(), strict = true) != null
+
+    private fun openApp(name: String): Result {
+        val pm = context.packageManager
+        val apps = installedApps()
+        if (apps.size < 3) return Result("Телефон не показывает Джарвису список приложений. Откройте Настройки → Проверка, там подсказка.")
+        val pkg = AppMatcher.best(name, apps) ?: run {
+            val hint = apps.map { it.first }.filter { it.firstOrNull()?.lowercaseChar() == name.firstOrNull()?.lowercaseChar() }.take(3)
+            return Result("Не нашёл приложение «$name»" + if (hint.isNotEmpty()) ". Может быть: ${hint.joinToString(", ")}?" else "")
+        }
         val label = apps.first { it.second == pkg }.first
         val intent = pm.getLaunchIntentForPackage(pkg) ?: return Result("Не получается открыть $label")
         return if (start(intent)) Result("Открываю $label") else Result("Не получается открыть $label")
@@ -122,23 +151,62 @@ class PhoneController(private val context: Context) {
         return Result("Набрал номер: $who. Нажмите вызов", speak = false)
     }
 
-    private fun sms(target: String, text: String, canAsk: Boolean): Result {
+    private fun sms(a: PhoneAction.Sms, canAsk: Boolean): Result {
+        if (a.app == "telegram") {
+            // В Telegram нельзя написать по номеру без выбора чата — открываем «Поделиться» с готовым текстом
+            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, a.text)
+                .setPackage("org.telegram.messenger")
+            return if (start(send)) Result("Выберите чат ${a.target} в Телеграме, текст уже вставлен")
+            else Result("Телеграм не установлен")
+        }
         var number: String? = null
-        var who = target
-        if (isNumber(target)) {
-            number = target.filter { it.isDigit() || it == '+' }
+        var who = a.target
+        if (isNumber(a.target)) {
+            number = a.target.filter { it.isDigit() || it == '+' }
         } else if (granted(Manifest.permission.READ_CONTACTS)) {
-            findContact(target)?.let { who = it.first; number = it.second }
+            findContact(a.target)?.let { who = it.first; number = it.second }
         } else if (canAsk) {
             return Result("", listOf(Manifest.permission.READ_CONTACTS))
         }
-        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + (number?.let { Uri.encode(it) } ?: "")))
-            .putExtra("sms_body", text)
-        return if (start(intent)) {
-            if (number != null) Result("Сообщение для $who готово, нажмите «Отправить»")
-            else Result("Не нашёл контакт «$target», выберите получателя сами")
-        } else Result("Не нашёл приложение для SMS")
+        val n = number
+        if (n == null) {
+            if (!a.strict) return Result("", fallThrough = true)
+            return Result("Не нашёл в контактах «${a.target}». Скажите имя, как оно записано в телефоне.")
+        }
+        return Result("", pendingSms = PendingSms(n, who, a.text, a.app))
     }
+
+    /** Отправка после подтверждения. SMS уходит сразу, WhatsApp открывается с готовым текстом. */
+    fun send(p: PendingSms, canAsk: Boolean): Result {
+        if (p.app == "whatsapp") {
+            var digits = p.number.filter { it.isDigit() }
+            if (digits.length == 11 && digits.startsWith("8")) digits = "7" + digits.drop(1)
+            if (digits.length == 10) digits = "7$digits"
+            val uri = Uri.parse("https://wa.me/$digits?text=" + Uri.encode(p.text))
+            val wa = Intent(Intent.ACTION_VIEW, uri).setPackage("com.whatsapp")
+            return if (start(wa) || start(Intent(Intent.ACTION_VIEW, uri))) Result("Открыл чат с ${p.who} в Ватсапе, нажмите «Отправить»")
+            else Result("Ватсап не установлен")
+        }
+        if (granted(Manifest.permission.SEND_SMS)) {
+            return try {
+                val sm = if (Build.VERSION.SDK_INT >= 31) context.getSystemService(android.telephony.SmsManager::class.java)
+                else @Suppress("DEPRECATION") android.telephony.SmsManager.getDefault()
+                val parts = sm.divideMessage(p.text)
+                sm.sendMultipartTextMessage(p.number, null, parts, null, null)
+                Result("Отправил ${p.who}: ${p.text}")
+            } catch (e: Exception) {
+                openSmsApp(p)
+            }
+        }
+        if (canAsk) return Result("", listOf(Manifest.permission.SEND_SMS))
+        return openSmsApp(p)
+    }
+
+    private fun openSmsApp(p: PendingSms): Result {
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(p.number))).putExtra("sms_body", p.text)
+        return if (start(intent)) Result("Сообщение для ${p.who} готово, нажмите «Отправить»") else Result("Не нашёл приложение для SMS")
+    }
+
 
     private fun alarm(a: PhoneAction.Alarm): Result {
         if (a.hour == null) {

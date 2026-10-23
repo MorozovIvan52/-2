@@ -33,7 +33,7 @@ object AppMatcher {
     }
 
     /** apps: пары (подпись, packageName). Возвращает packageName лучшего совпадения. */
-    fun best(query: String, apps: List<Pair<String, String>>): String? {
+    fun best(query: String, apps: List<Pair<String, String>>, strict: Boolean = false): String? {
         val vs = variants(query)
         var bestScore = 0
         var bestPkg: String? = null
@@ -50,6 +50,7 @@ object AppMatcher {
             } - n.length / 10
             if (score > bestScore) { bestScore = score; bestPkg = pkg }
         }
+        if (strict && bestScore < 75) return null
         return bestPkg
     }
 }

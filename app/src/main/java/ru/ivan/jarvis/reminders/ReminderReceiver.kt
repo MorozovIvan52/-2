@@ -46,11 +46,13 @@ class ReminderReceiver : BroadcastReceiver() {
                             }
                         }
                         nagAgain(context, item, 1)
+                        if (Prefs(context).speakReminders) ru.ivan.jarvis.voice.ReminderVoice.say(context, "Напоминаю: ${item.title}")
                     }
                     ReminderScheduler.ACTION_SNOOZE_FIRE -> {
                         if (item.done) return@launch
                         show(context, item)
                         nagAgain(context, item, intent.getIntExtra(ReminderScheduler.EXTRA_NAG, 0) + 1)
+                        if (Prefs(context).speakReminders) ru.ivan.jarvis.voice.ReminderVoice.say(context, "Всё ещё жду: ${item.title}")
                     }
                     ReminderScheduler.ACTION_DONE -> {
                         NotificationManagerCompat.from(context).cancel(id.toInt())

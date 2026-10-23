@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -167,6 +168,15 @@ fun HomeScreen(
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(feedback.text, Modifier.weight(1f).padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
                     if (feedback.itemId != null) TextButton(onClick = onUndo) { Text("Отменить") }
+                }
+                if (feedback.quick.isNotEmpty()) {
+                    Row(
+                        Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        feedback.quick.forEach { q -> SuggestionChip(onClick = { onText(q) }, label = { Text(q) }) }
+                    }
                 }
             }
         }

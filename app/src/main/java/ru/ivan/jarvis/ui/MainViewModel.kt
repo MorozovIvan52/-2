@@ -39,7 +39,14 @@ import ru.ivan.jarvis.voice.VoiceInput
 import java.time.LocalDate
 
 /** Ответ Джарвиса на последнюю команду. itemId — чтобы можно было отменить. */
-data class Feedback(val text: String, val itemId: Long? = null, val restore: Item? = null)
+data class Feedback(val text: String, val itemId: Long? = null, val restore: Item? = null, val quick: List<String> = emptyList())
+
+/** Что Джарвис ждёт в следующей фразе. */
+private sealed interface Pending {
+    data class Confirm(val sms: PhoneController.PendingSms) : Pending
+    data class SmsText(val sms: PhoneController.PendingSms) : Pending
+    data class When(val itemId: Long, val title: String) : Pending
+}
 
 /** Запрос разрешений, после которого команду надо повторить. */
 data class PermissionAsk(val permissions: List<String>, val retry: () -> Unit)
@@ -74,6 +81,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var fromVoice = false
+    private var pending: Pending? = null
     private var continueAfterSpeech = false
 
     /** Последний обмен с ИИ — передаётся только если был недавно (экономия токенов). */
@@ -101,8 +109,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** followUp — в режиме диалога после ответа снова включить микрофон. */
-    private fun answer(text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false, restore: Item? = null) {
-        feedback = Feedback(text, itemId, restore)
+    private fun answer(
+        text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false,
+        restore: Item? = null, quick: List<String> = emptyList(),
+    ) {
+        feedback = Feedback(text, itemId, restore, quick)
         val willSpeak = speakEnabled && speak
         continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && (followUp || text.trimEnd().endsWith("?"))
         if (willSpeak) speaker.say(text)
@@ -126,14 +137,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun handleInternal(text: String, afterPermission: Boolean) {
         if (text.isBlank()) return
+        // 0. Ответ на уточняющий вопрос Джарвиса («Отправить?», «Когда напомнить?»)
+        pending?.let { p ->
+            pending = null
+            if (handlePending(p, text)) return
+        }
         if (STOP_DIALOG.matches(text.trim().lowercase())) {
             fromVoice = false
+            pending = null
             answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random())
             return
         }
         // 1. Команды управления телефоном — бесплатно, на устройстве
         ActionParser.parse(text)?.let { action ->
             runAction(text, action, afterPermission)
+            return
+        }
+        // 1б. Просто название приложения: «телеграм», «ютуб»
+        val bare = text.trim().replace(Regex("^(джарвис|jarvis)[\\s,.!]*", RegexOption.IGNORE_CASE), "").trim().trimEnd('.', '!', '?')
+        if (bare.isNotEmpty() && bare.split(' ').size <= 2 && phone.hasApp(bare)) {
+            runAction(text, PhoneAction.OpenApp(bare), afterPermission)
             return
         }
         // 2. Правка дел: «сделал…», «перенеси…», «удали…», «итоги дня»
@@ -172,9 +195,66 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val r = phone.perform(action, canAsk = !afterPermission)
                 if (r.missingPermissions.isNotEmpty()) {
                     permissionAsk = PermissionAsk(r.missingPermissions) { handleInternal(text, afterPermission = true) }
+                } else if (r.fallThrough) {
+                    viewModelScope.launch { saveOrQuery(text) }
+                } else if (r.pendingSms != null) {
+                    askConfirm(r.pendingSms)
                 } else if (r.message.isNotBlank()) {
                     answer(r.message, speak = r.speak)
                 }
+            }
+        }
+    }
+
+    private fun askConfirm(sms: PhoneController.PendingSms) {
+        val where = when (sms.app) { "whatsapp" -> "В Ватсап"; else -> "SMS" }
+        if (sms.text.isBlank()) {
+            pending = Pending.SmsText(sms)
+            answer("Что написать ${sms.who}?", followUp = true, quick = listOf("Отмена"))
+        } else {
+            pending = Pending.Confirm(sms)
+            answer("$where для ${sms.who}: «${sms.text}». Отправить?", followUp = true, quick = listOf("Да, отправь", "Нет"))
+        }
+    }
+
+    private fun sendConfirmed(sms: PhoneController.PendingSms, afterPermission: Boolean) {
+        val r = phone.send(sms, canAsk = !afterPermission)
+        if (r.missingPermissions.isNotEmpty()) {
+            permissionAsk = PermissionAsk(r.missingPermissions) { sendConfirmed(sms, afterPermission = true) }
+        } else {
+            answer(r.message)
+        }
+    }
+
+    /** true — фраза была ответом на вопрос и обработана. */
+    private fun handlePending(p: Pending, text: String): Boolean {
+        val t = text.trim().lowercase().replace(Regex("^(джарвис|jarvis)[\\s,.!]*"), "")
+        val yes = YES.containsMatchIn(t)
+        val no = NO.containsMatchIn(t)
+        when (p) {
+            is Pending.Confirm -> {
+                if (yes) { sendConfirmed(p.sms, afterPermission = false); return true }
+                if (no) { answer("Хорошо, не отправляю"); return true }
+                return false
+            }
+            is Pending.SmsText -> {
+                if (no) { answer("Отменил"); return true }
+                askConfirm(p.sms.copy(text = text.trim()))
+                return true
+            }
+            is Pending.When -> {
+                if (no) { answer("Хорошо, оставил в заметках"); return true }
+                val c = CommandParser.parse("напомни $text ЗАДАЧА") as? Command.Save ?: return false
+                if (c.due == null || !c.title.equals("ЗАДАЧА", ignoreCase = true)) return false
+                viewModelScope.launch {
+                    val item = dao.get(p.itemId) ?: return@launch
+                    val moved = item.copy(type = ItemType.REMINDER, dueAt = c.due.toMillis(), allDay = c.allDay, repeat = c.repeat)
+                    dao.update(moved)
+                    ReminderScheduler.schedule(appContext, moved)
+                    val cal = syncCal(moved)
+                    answer("Напомню ${describeDue(moved)}: ${moved.title}" + if (cal) ". Добавил в календарь" else "", moved.id)
+                }
+                return true
             }
         }
     }
@@ -203,7 +283,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val inCalendar = syncCal(saved)
                 val msg = if (saved.type == ItemType.NOTE) "Записал в заметки: ${saved.title}"
                 else "Напомню ${describeDue(saved)}: ${saved.title}" + if (inCalendar) ". Добавил в календарь" else ""
-                if (announce) answer(msg, saved.id)
+                // Задача без времени — уточняем, когда напомнить, чтобы она не потерялась
+                if (announce && saved.type == ItemType.NOTE && prefs.askWhen && !NOTE_WORDS.containsMatchIn(text)) {
+                    pending = Pending.When(saved.id, saved.title)
+                    answer(
+                        "Записал: ${saved.title}. Когда напомнить?", saved.id, followUp = true,
+                        quick = listOf("Через час", "Сегодня вечером", "Завтра утром", "Не надо"),
+                    )
+                } else if (announce) answer(msg, saved.id)
                 msg
             }
             is Command.Query -> {
@@ -246,7 +333,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         lastExchange = Triple(text, raw, System.currentTimeMillis())
         val parsed = Assistant.parse(raw)
-        for (cmd in parsed.commands) saveOrQuery(cmd, announce = false)
+        for (cmd in parsed.commands) {
+            // Команды телефона от ИИ выполняем как голосовые; остальное — заметки и напоминания
+            val action = ActionParser.parse(cmd)
+            if (action != null) runAction(cmd, action, afterPermission = false) else saveOrQuery(cmd, announce = false)
+        }
         val extra = when (parsed.commands.size) {
             0 -> ""
             1 -> " Записал."
@@ -445,6 +536,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
         private val PLAN_WORDS = Regex("(план|день|дня|задач|дела|успеть|приоритет|расписани)", RegexOption.IGNORE_CASE)
+        private val YES = Regex("^(да|ага|угу|отправь|отправляй|давай|конечно|верно|подтверждаю|ок|окей|точно|yes)(?![\\p{L}])")
+        private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
+        private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")
     }
 }

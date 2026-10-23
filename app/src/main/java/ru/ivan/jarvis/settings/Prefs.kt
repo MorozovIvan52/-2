@@ -85,5 +85,9 @@ class Prefs(context: Context) {
     /** true — свой будильник Джарвиса вместо приложения «Часы». */
     var alarmOwn: Boolean get() = bool("alarm_own", false); set(v) = setBool("alarm_own", v)
     var calendarSync: Boolean get() = bool("calendar_sync", true); set(v) = setBool("calendar_sync", v)
+    /** Задача без времени — спросить «Когда напомнить?». */
+    var askWhen: Boolean get() = bool("ask_when", true); set(v) = setBool("ask_when", v)
+    /** Проговаривать напоминание вслух, когда оно срабатывает. */
+    var speakReminders: Boolean get() = bool("speak_reminders", true); set(v) = setBool("speak_reminders", v)
     var calendarAsked: Boolean get() = bool("calendar_asked", false); set(v) = setBool("calendar_asked", v)
 }

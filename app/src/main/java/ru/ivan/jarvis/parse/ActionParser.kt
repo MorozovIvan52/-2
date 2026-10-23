@@ -10,7 +10,8 @@ enum class SettingsPanel { WIFI, BLUETOOTH, INTERNET, DISPLAY, SOUND, BATTERY, G
 sealed interface PhoneAction {
     data class OpenApp(val name: String) : PhoneAction
     data class Call(val target: String) : PhoneAction
-    data class Sms(val target: String, val text: String) : PhoneAction
+    /** app: "" — SMS, "whatsapp", "telegram". strict = false — угадано по «напиши маме …», нужен контакт. */
+    data class Sms(val target: String, val text: String, val app: String = "", val strict: Boolean = true) : PhoneAction
     /** hour == null — просто открыть будильники. */
     /** date — конкретный день, если это не ближайшие сутки; days — повтор по дням недели. */
     data class Alarm(
@@ -72,16 +73,31 @@ object ActionParser {
     private val weekendRx = rx("(по\\s+выходным|в\\s+выходные)")
     private val everyDayRx = rx("(каждый\\s+день|ежедневно|всегда|каждое\\s+утро)")
     private val call = rx("^(позвони|набери|вызови|звонок)$R\\s+(.+)$")
-    private val sms = rx("^(напиши|отправь)\\s+(смс|sms|эсэмэс|эсэмэску|смску|сообщение)$R\\s*(.+)$")
+    private val sms = rx("^(напиши|отправь|скинь|пошли|черкни)\\s+(смс|sms|эсэмэс|эсэмэску|смску|сообщение|сообщу|смс-ку)$R\\s*(.+)$")
+    private val messenger = rx("^(напиши|отправь|скинь|пошли)\\s+(?:сообщение\\s+)?(?:в|во|по)\\s+(ватсап\\p{L}*|вотсап\\p{L}*|вацап\\p{L}*|whatsapp|телеграм\\p{L}*|телегу|телеге|telegram)$R\\s*(.+)$")
+    private val softSms = rx("^(напиши|отправь|скинь|передай)\\s+(?!(заметк|список|иде|текст|письм|пост|ответ|в\\s|себе|мне\\s|план|отчет|отчёт|статью|код|сообщение))(\\p{L}+(?:\\s+\\p{Lu}\\p{L}+)?)\\s*(?:[:,]|\\s+(?:что|чтобы))\\s*(.+)$")
+    private val politeLead = rx("^(можешь|можете|сможешь|мог\\s+бы\\s+ты|не\\s+мог\\s+бы\\s+ты|не\\s+могли\\s+бы\\s+вы|давай|будь\\s+добр)\\s+")
+    private val infinitives = mapOf(
+        "открыть" to "открой", "запустить" to "запусти", "позвонить" to "позвони", "набрать" to "набери",
+        "написать" to "напиши", "отправить" to "отправь", "поставить" to "поставь", "разбудить" to "разбуди",
+        "включить" to "включи", "выключить" to "выключи", "найти" to "найди", "засечь" to "засеки",
+        "проложить" to "проложи", "сделать" to "сделай", "скинуть" to "скинь",
+    )
     private val navigate = rx("^(проложи\\s+маршрут|построй\\s+маршрут|маршрут|как\\s+(доехать|добраться|пройти)|навигатор|отвези\\s+меня|поехали)$R\\s*(до|в|к|на)?\\s*(.+)$")
     private val camera = rx("^(открой\\s+камеру|включи\\s+камеру|запусти\\s+камеру|сфотографируй|сделай\\s+(фото|снимок|фотку|селфи)|камера)$R")
     private val settingsVerb = rx("^(включи|выключи|отключи|открой|настрой|настройки)$R")
     private val search = rx("^(найди|поищи|загугли|погугли|поиск|найти|ищи)(\\s+(в\\s+интернете|в\\s+гугле|в\\s+яндексе))?\\s+(.+)$")
-    private val openApp = rx("^(открой|запусти|включи|зайди\\s+в|перейди\\s+в)\\s+(приложение\\s+)?(.+)$")
+    private val openApp = rx("^(открой|открою|откройте|запусти|запустите|включи|зайди\\s+в|зайди\\s+во|перейди\\s+в|иди\\s+в|хочу\\s+в)\\s+(?:мне\\s+)?(приложение\\s+|прогу\\s+|программу\\s+)?(.+)$")
 
     fun parse(raw: String, now: LocalDateTime = LocalDateTime.now()): PhoneAction? {
-        val s = wake.replace(raw.trim().replace('ё', 'е').replace('Ё', 'Е'), "").replace(please, " ")
+        var s = wake.replace(raw.trim().replace('ё', 'е').replace('Ё', 'Е'), "").replace(please, " ")
             .trim().trimEnd('.', '!', '?', ' ').replace(Regex("\\s+"), " ")
+        // «можешь открыть телеграм» → «открой телеграм»
+        politeLead.find(s)?.let { m ->
+            val rest = s.substring(m.range.last + 1).replace(rx("^(мне|пожалуйста)\\s+"), "")
+            val first = rest.substringBefore(' ').lowercase()
+            infinitives[first]?.let { s = it + rest.substring(first.length) }
+        }
         if (s.isEmpty()) return null
         val l = s.lowercase()
 
@@ -116,7 +132,15 @@ object ActionParser {
             val target = m.groupValues[2].replace(rx("^(мне\\s+|на\\s+номер\\s+|по\\s+номеру\\s+)"), "").trim()
             return PhoneAction.Call(target)
         }
+        messenger.find(s)?.let { m ->
+            val app = if (m.groupValues[2].lowercase().let { it.startsWith("т") || it.startsWith("tel") }) "telegram" else "whatsapp"
+            return parseSms(m.groupValues[3]).copy(app = app)
+        }
         sms.find(s)?.let { m -> return parseSms(m.groupValues[3]) }
+        softSms.find(s)?.let { m ->
+            if ((CommandParser.parse(s, now) as? Command.Save)?.due != null) return null
+            return PhoneAction.Sms(m.groupValues[3].trim(), m.groupValues[4].trim(), strict = false)
+        }
         navigate.find(s)?.let { m -> return PhoneAction.Navigate(m.groupValues[4].trim()) }
         if (camera.containsMatchIn(l)) return PhoneAction.Camera
         if (settingsVerb.containsMatchIn(l)) settingsPanel(l)?.let { return PhoneAction.Settings(it) }

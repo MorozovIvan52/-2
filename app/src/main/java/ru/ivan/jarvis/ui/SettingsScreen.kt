@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +63,8 @@ fun SettingsScreen(vm: MainViewModel) {
     var breakMin by remember { mutableIntStateOf(prefs.breakMinutes) }
     var dialog by remember { mutableStateOf(prefs.dialog) }
     var calSync by remember { mutableStateOf(prefs.calendarSync) }
+    var askWhen by remember { mutableStateOf(prefs.askWhen) }
+    var speakRem by remember { mutableStateOf(prefs.speakReminders) }
     var alarmOwn by remember { mutableStateOf(prefs.alarmOwn) }
     val calGranted = ru.ivan.jarvis.calendar.CalendarSync.granted(context)
     var morningOn by remember { mutableStateOf(prefs.morningOn) }
@@ -120,6 +123,10 @@ fun SettingsScreen(vm: MainViewModel) {
                 "Сегодня: ${prefs.tokensToday} токенов · всего: ${prefs.tokensTotal} · озвучено Яндексом: ${prefs.ttsCharsTotal} симв.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        Section("Проверка: что разрешено") {
+            DiagnosticsBlock()
         }
 
         Section("Календарь и будильник") {
@@ -197,6 +204,8 @@ fun SettingsScreen(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             SwitchRow("Режим диалога (после ответа снова слушаю)", dialog) { dialog = it; prefs.dialog = it }
+            SwitchRow("Спрашивать «Когда напомнить?» для задач без времени", askWhen) { askWhen = it; prefs.askWhen = it }
+            SwitchRow("Проговаривать напоминания вслух", speakRem) { speakRem = it; prefs.speakReminders = it }
             SwitchRow("Утренний план дня", morningOn) { morningOn = it; prefs.morningOn = it; Briefing.scheduleAll(context) }
             if (morningOn) HourChips(listOf(7, 8, 9, 10), morningHour) { morningHour = it; prefs.morningHour = it; Briefing.scheduleAll(context) }
             SwitchRow("Вечерние итоги", eveningOn) { eveningOn = it; prefs.eveningOn = it; Briefing.scheduleAll(context) }
@@ -221,6 +230,55 @@ private fun Section(title: String, content: @Composable () -> Unit) {
             content()
         }
     }
+}
+
+@Composable
+private fun DiagnosticsBlock() {
+    val context = LocalContext.current
+    var tick by remember { mutableIntStateOf(0) }
+    fun ok(p: String) = androidx.core.content.ContextCompat.checkSelfPermission(context, p) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { tick++ }
+    val apps = remember(tick) {
+        context.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0).size
+    }
+    val am = context.getSystemService(android.app.AlarmManager::class.java)
+    val nm = context.getSystemService(android.app.NotificationManager::class.java)
+    val rows = listOf(
+        Triple("Микрофон", ok(android.Manifest.permission.RECORD_AUDIO), android.Manifest.permission.RECORD_AUDIO),
+        Triple("Контакты (звонки и SMS по имени)", ok(android.Manifest.permission.READ_CONTACTS), android.Manifest.permission.READ_CONTACTS),
+        Triple("Отправка SMS", ok(android.Manifest.permission.SEND_SMS), android.Manifest.permission.SEND_SMS),
+        Triple("Звонки", ok(android.Manifest.permission.CALL_PHONE), android.Manifest.permission.CALL_PHONE),
+        Triple("Календарь", ok(android.Manifest.permission.WRITE_CALENDAR), android.Manifest.permission.WRITE_CALENDAR),
+        Triple("Уведомления", android.os.Build.VERSION.SDK_INT < 33 || ok(android.Manifest.permission.POST_NOTIFICATIONS),
+            if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.POST_NOTIFICATIONS else ""),
+    )
+    key(tick) {
+        rows.forEach { (name, granted, _) -> Text((if (granted) "✅ " else "❌ ") + name, style = MaterialTheme.typography.bodyMedium) }
+        val exact = android.os.Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        Text((if (exact) "✅ " else "❌ ") + "Точные напоминания", style = MaterialTheme.typography.bodyMedium)
+        val full = android.os.Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()
+        Text((if (full) "✅ " else "❌ ") + "Будильник поверх экрана", style = MaterialTheme.typography.bodyMedium)
+        Text((if (apps > 3) "✅ " else "❌ ") + "Видно приложений: $apps", style = MaterialTheme.typography.bodyMedium)
+        val speech = android.speech.SpeechRecognizer.isRecognitionAvailable(context)
+        Text((if (speech) "✅ " else "❌ ") + "Распознавание речи", style = MaterialTheme.typography.bodyMedium)
+    }
+    val missing = rows.filter { !it.second && it.third.isNotEmpty() }.map { it.third }
+    if (missing.isNotEmpty()) {
+        androidx.compose.material3.Button(onClick = { launcher.launch(missing.toTypedArray()) }, modifier = Modifier.fillMaxWidth()) {
+            Text("Разрешить всё")
+        }
+    }
+    OutlinedButton(onClick = {
+        runCatching {
+            context.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + context.packageName)))
+        }
+    }, modifier = Modifier.fillMaxWidth()) { Text("Настройки приложения") }
+    Text(
+        "На Xiaomi/Redmi/POCO в «Настройки приложения → Другие разрешения» включите «Отображать всплывающие окна, когда запущено в фоне» и «Автозапуск» — иначе телефон не даёт открывать приложения и вовремя напоминать.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

@@ -19,6 +19,22 @@ class ActionParserTest {
         assertEquals(PhoneAction.Call("+79161234567"), p("набери +79161234567"))
     }
 
+    @Test fun politeAndForms() {
+        assertEquals(PhoneAction.OpenApp("телеграм"), p("Джарвис, можешь открыть телеграм"))
+        assertEquals(PhoneAction.OpenApp("ватсап"), p("открой мне ватсап"))
+        assertEquals(PhoneAction.OpenApp("ютуб"), p("зайди в ютуб"))
+        assertEquals(PhoneAction.Call("маме"), p("можешь позвонить маме?"))
+        assertEquals(PhoneAction.Alarm(7, 0, ""), p("давай поставить будильник на 7"))
+    }
+
+    @Test fun messages() {
+        assertEquals(PhoneAction.Sms("маме", "я задержусь", strict = false), p("напиши маме что я задержусь"))
+        assertEquals(PhoneAction.Sms("Саше", "привет", app = "whatsapp"), p("напиши в ватсап Саше: привет"))
+        assertEquals(PhoneAction.Sms("Пете", "скоро буду", app = "telegram"), p("отправь в телеграм Пете что скоро буду"))
+        assertNull(p("напиши заметку что купить хлеб"))
+        assertNull(p("напиши маме завтра в 9 что я приеду"))
+    }
+
     @Test fun callWithTimeIsReminder() {
         assertNull(p("позвони маме завтра в 9"))
     }
