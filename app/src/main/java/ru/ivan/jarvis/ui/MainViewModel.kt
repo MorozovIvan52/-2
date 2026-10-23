@@ -39,7 +39,14 @@ import ru.ivan.jarvis.voice.VoiceInput
 import java.time.LocalDate
 
 /** Ответ Джарвиса на последнюю команду. itemId — чтобы можно было отменить. */
-data class Feedback(val text: String, val itemId: Long? = null, val restore: Item? = null, val quick: List<String> = emptyList())
+data class Feedback(
+    val text: String,
+    val itemId: Long? = null,
+    val restore: Item? = null,
+    val quick: List<String> = emptyList(),
+    /** Источники ответа из интернета: (домен, ссылка). */
+    val links: List<Pair<String, String>> = emptyList(),
+)
 
 /** Что Джарвис ждёт в следующей фразе. */
 private sealed interface Pending {
@@ -60,6 +67,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val speaker = Speaker(app, prefs)
     private val phone = PhoneController(app)
     private val gpt = YandexGpt(prefs)
+    private val web = ru.ivan.jarvis.ai.WebSearch(app, prefs, gpt)
 
     val items: StateFlow<List<Item>> =
         dao.observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -111,9 +119,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** followUp — в режиме диалога после ответа снова включить микрофон. */
     private fun answer(
         text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false,
-        restore: Item? = null, quick: List<String> = emptyList(),
+        restore: Item? = null, quick: List<String> = emptyList(), links: List<Pair<String, String>> = emptyList(),
     ) {
-        feedback = Feedback(text, itemId, restore, quick)
+        feedback = Feedback(text, itemId, restore, quick, links)
         val willSpeak = speakEnabled && speak
         continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && (followUp || text.trimEnd().endsWith("?"))
         if (willSpeak) speaker.say(text)
@@ -165,6 +173,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
+            // 3а. Цены, моменты затяжки, коды ошибок, погода — ищем в интернете
+            if (ru.ivan.jarvis.parse.SearchParse.needsWeb(text) && (CommandParser.parse(text) as? Command.Save)?.due == null) {
+                webAnswer(text)
+                return@launch
+            }
             // 3. Вопросы и сложные просьбы — ИИ (если подключён)
             if (prefs.aiOn && prefs.yandexReady && Assistant.shouldAsk(text) &&
                 (CommandParser.parse(text) as? Command.Save)?.due == null
@@ -181,6 +194,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         when (action) {
             PhoneAction.Help -> answer(HELP, followUp = true)
             PhoneAction.WhatNow -> answer(whatNow())
+            is PhoneAction.WebSearch -> viewModelScope.launch { webAnswer(action.query) }
             is PhoneAction.Focus -> {
                 Focus.start(appContext, action.minutes)
                 refreshFocus()
@@ -204,6 +218,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /** Поиск в интернете с коротким ответом голосом и ссылками на источники. */
+    private suspend fun webAnswer(question: String) {
+        thinking = true
+        feedback = Feedback("Ищу в интернете…")
+        val r = runCatching { web.ask(question) }.getOrNull()
+        thinking = false
+        if (r == null) {
+            // Не получилось — открываем обычный поиск, чтобы вопрос не пропал
+            phone.perform(PhoneAction.WebSearch(ru.ivan.jarvis.parse.SearchParse.cleanQuery(question)), canAsk = false)
+            answer("Не смог найти ответ сам, открыл поиск", speak = false)
+            return
+        }
+        answer(r.text, followUp = true, links = r.hits.take(3).map { it.domain to it.url })
     }
 
     private fun askConfirm(sms: PhoneController.PendingSms) {
@@ -532,6 +561,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val HELP = "Я умею: записывать заметки и напоминания (они попадают и в календарь телефона), ставить будильник на любое время и по будням, открывать приложения, звонить, писать SMS, " +
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
+            "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок. " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")

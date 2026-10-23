@@ -77,7 +77,9 @@ private val examples = listOf(
     "Запиши в календарь встречу в пятницу в 15",
     "Поставь таймер на 10 минут",
     "Включи фонарик",
-    "Как перестать откладывать дела?",
+    "Какой момент затяжки ГБЦ на Логан 1.6?",
+    "Что значит ошибка P0300?",
+    "Напиши маме что я задержусь",
     "Что ты умеешь?",
 )
 
@@ -168,6 +170,22 @@ fun HomeScreen(
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(feedback.text, Modifier.weight(1f).padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
                     if (feedback.itemId != null) TextButton(onClick = onUndo) { Text("Отменить") }
+                }
+                if (feedback.links.isNotEmpty()) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    Row(
+                        Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        feedback.links.forEach { (domain, url) ->
+                            SuggestionChip(onClick = {
+                                runCatching {
+                                    ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                                }
+                            }, label = { Text("🔗 $domain") })
+                        }
+                    }
                 }
                 if (feedback.quick.isNotEmpty()) {
                     Row(
