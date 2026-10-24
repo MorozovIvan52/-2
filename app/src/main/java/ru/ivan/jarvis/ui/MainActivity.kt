@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
@@ -85,7 +86,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { HOME("Джарвис"), CALENDAR("Календарь"), NOTES("Заметки"), SETTINGS("Настройки") }
+private enum class Tab(val label: String) { HOME("Джарвис"), SERVICE("Сервис"), CALENDAR("Календарь"), NOTES("Заметки"), SETTINGS("Настройки") }
 
 @Composable
 private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
@@ -95,6 +96,9 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
     var selectedDay by remember { mutableStateOf(LocalDate.now()) }
     var editing by remember { mutableStateOf<Item?>(null) }
+    var editingOrder by remember { mutableStateOf<ru.ivan.jarvis.service.Order?>(null) }
+    val orders by vm.orders.collectAsStateWithLifecycle()
+    val money by vm.money.collectAsStateWithLifecycle()
 
     // Запасной путь, если на телефоне нет встроенного SpeechRecognizer — системное окно распознавания.
     val recognizeActivity = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -154,6 +158,7 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                             Icon(
                                 when (t) {
                                     Tab.HOME -> Icons.Filled.Mic
+                                    Tab.SERVICE -> Icons.Filled.Build
                                     Tab.CALENDAR -> Icons.Filled.CalendarMonth
                                     Tab.NOTES -> Icons.Filled.EditNote
                                     Tab.SETTINGS -> Icons.Filled.Settings
@@ -167,6 +172,11 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
             }
         },
         floatingActionButton = {
+            if (tab == Tab.SERVICE) {
+                FloatingActionButton(onClick = { editingOrder = ru.ivan.jarvis.service.Order() }) {
+                    Icon(Icons.Filled.Add, contentDescription = "Новый заказ")
+                }
+            }
             if (tab == Tab.CALENDAR || tab == Tab.NOTES) {
                 FloatingActionButton(onClick = {
                     editing = if (tab == Tab.CALENDAR) {
@@ -205,8 +215,28 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                 )
                 Tab.NOTES -> NotesScreen(items = items, onEdit = { editing = it }, onToggleDone = vm::toggleDone)
                 Tab.SETTINGS -> SettingsScreen(vm)
+                Tab.SERVICE -> ServiceScreen(
+                    orders = orders,
+                    money = money,
+                    onEdit = { editingOrder = it },
+                    onStatus = { o, st ->
+                        vm.setOrderStatus(o, st)
+                        // «Готов» с телефоном — Джарвис предложит написать клиенту на главном экране
+                        if (st == ru.ivan.jarvis.parse.OrderStatus.READY && o.phone.isNotBlank()) tab = Tab.HOME
+                    },
+                    onAsk = { tab = Tab.HOME; vm.handle(it) },
+                )
             }
         }
+    }
+
+    editingOrder?.let { o ->
+        EditOrderDialog(
+            initial = o,
+            onDismiss = { editingOrder = null },
+            onSave = { vm.saveOrder(it); editingOrder = null },
+            onDelete = if (o.id != 0L) ({ x: ru.ivan.jarvis.service.Order -> vm.deleteOrder(x); editingOrder = null }) else null,
+        )
     }
 
     editing?.let { item ->

@@ -68,6 +68,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val phone = PhoneController(app)
     private val gpt = YandexGpt(prefs)
     private val web = ru.ivan.jarvis.ai.WebSearch(app, prefs, gpt)
+    private val serviceDao = ru.ivan.jarvis.service.ServiceDb.get(app).dao()
+    private val service = ru.ivan.jarvis.service.ServiceAssistant(serviceDao)
+    val orders: StateFlow<List<ru.ivan.jarvis.service.Order>> =
+        serviceDao.observeOrders().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val money: StateFlow<List<ru.ivan.jarvis.service.MoneyEntry>> =
+        serviceDao.observeMoney().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val items: StateFlow<List<Item>> =
         dao.observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -97,6 +103,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshFocus()
+        phone.serviceLookup = { name -> service.phoneFor(orders.value, name) }
         speaker.onDone = {
             if (continueAfterSpeech) {
                 continueAfterSpeech = false
@@ -161,6 +168,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             runAction(text, action, afterPermission)
             return
         }
+        // 1а. Автосервис: клиенты, статусы машин, запчасти, касса
+        ru.ivan.jarvis.parse.ServiceParser.parse(text)?.let { cmd ->
+            viewModelScope.launch {
+                val reply = service.handle(cmd)
+                if (reply == null) handleRest(text, afterPermission) else applyService(reply)
+            }
+            return
+        }
+        handleRest(text, afterPermission)
+    }
+
+    private fun applyService(r: ru.ivan.jarvis.service.ServiceAssistant.Reply) {
+        viewModelScope.launch {
+            if (r.task != null) saveOrQuery(r.task, announce = r.text.isBlank())
+            when {
+                r.sms != null -> askConfirm(r.sms, prefix = r.text + " Написать ${r.sms.who}: ")
+                r.text.isNotBlank() -> answer(r.text, quick = r.quick)
+            }
+        }
+    }
+
+    private fun handleRest(text: String, afterPermission: Boolean) {
         // 1б. Просто название приложения: «телеграм», «ютуб»
         val bare = text.trim().replace(Regex("^(джарвис|jarvis)[\\s,.!]*", RegexOption.IGNORE_CASE), "").trim().trimEnd('.', '!', '?')
         if (bare.isNotEmpty() && bare.split(' ').size <= 2 && phone.hasApp(bare)) {
@@ -235,16 +264,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         answer(r.text, followUp = true, links = r.hits.take(3).map { it.domain to it.url })
     }
 
-    private fun askConfirm(sms: PhoneController.PendingSms) {
+    private fun askConfirm(sms: PhoneController.PendingSms, prefix: String? = null) {
         val where = when (sms.app) { "whatsapp" -> "В Ватсап"; else -> "SMS" }
         if (sms.text.isBlank()) {
             pending = Pending.SmsText(sms)
             answer("Что написать ${sms.who}?", followUp = true, quick = listOf("Отмена"))
         } else {
             pending = Pending.Confirm(sms)
-            answer("$where для ${sms.who}: «${sms.text}». Отправить?", followUp = true, quick = listOf("Да, отправь", "Нет"))
+            val q = if (prefix != null) "$prefix«${sms.text}»?" else "$where для ${sms.who}: «${sms.text}». Отправить?"
+            answer(q, followUp = true, quick = listOf("Да, отправь", "Нет"))
         }
     }
+
+    // Действия из вкладки «Сервис»
+    fun saveOrder(o: ru.ivan.jarvis.service.Order) {
+        viewModelScope.launch {
+            if (o.id == 0L) serviceDao.insert(o) else serviceDao.update(o.copy(updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    fun deleteOrder(o: ru.ivan.jarvis.service.Order) {
+        viewModelScope.launch { serviceDao.deleteOrder(o.id) }
+    }
+
+    fun setOrderStatus(o: ru.ivan.jarvis.service.Order, st: ru.ivan.jarvis.parse.OrderStatus) {
+        fromVoice = false
+        viewModelScope.launch {
+            val q = listOf(o.car, o.client, o.plate).filter { it.isNotBlank() }.joinToString(" ").ifBlank { o.work }
+            service.handle(ru.ivan.jarvis.parse.ServiceCommand.SetStatus(q, st))?.let { applyService(it) }
+                ?: serviceDao.update(o.copy(status = st, updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    suspend fun moneyTotals(days: Int) = service.totals(days)
 
     private fun sendConfirmed(sms: PhoneController.PendingSms, afterPermission: Boolean) {
         val r = phone.send(sms, canAsk = !afterPermission)
@@ -561,6 +613,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val HELP = "Я умею: записывать заметки и напоминания (они попадают и в календарь телефона), ставить будильник на любое время и по будням, открывать приложения, звонить, писать SMS, " +
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
+            "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
+            "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок. " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"

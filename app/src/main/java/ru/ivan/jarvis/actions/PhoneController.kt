@@ -39,6 +39,9 @@ class PhoneController(private val context: Context) {
 
     data class PendingSms(val number: String, val who: String, val text: String, val app: String)
 
+    /** Запасной поиск телефона по имени — среди клиентов автосервиса: (имя, номер). */
+    var serviceLookup: ((String) -> Pair<String, String>?)? = null
+
     private fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
 
     /** Запускаем из открытого экрана Джарвиса — так надёжнее (Xiaomi и др. блокируют запуск из фона). */
@@ -136,7 +139,7 @@ class PhoneController(private val context: Context) {
             start(Intent(Intent.ACTION_DIAL))
             return Result("Нет доступа к контактам, открыл набор номера")
         }
-        val (name, number) = findContact(target) ?: return Result("Не нашёл в контактах «$target»")
+        val (name, number) = findContact(target) ?: serviceLookup?.invoke(target) ?: return Result("Не нашёл в контактах «$target»")
         return dial(number, name, canAsk)
     }
 
@@ -164,7 +167,7 @@ class PhoneController(private val context: Context) {
         if (isNumber(a.target)) {
             number = a.target.filter { it.isDigit() || it == '+' }
         } else if (granted(Manifest.permission.READ_CONTACTS)) {
-            findContact(a.target)?.let { who = it.first; number = it.second }
+            (findContact(a.target) ?: serviceLookup?.invoke(a.target))?.let { who = it.first; number = it.second }
         } else if (canAsk) {
             return Result("", listOf(Manifest.permission.READ_CONTACTS))
         }
