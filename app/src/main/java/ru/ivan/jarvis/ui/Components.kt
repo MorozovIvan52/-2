@@ -78,7 +78,7 @@ fun ItemCard(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    item.title,
+                    (if (item.priority > 0) "❗ " else "") + item.title,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     maxLines = 3,

@@ -66,7 +66,7 @@ object Briefing {
     fun morningText(items: List<Item>): String {
         val today = todayItems(items, LocalDate.now())
         if (today.isEmpty()) return "На сегодня дел нет. Выберите одно важное дело и скажите «фокус»."
-        val first = today.first()
+        val first = today.firstOrNull { it.priority > 0 } ?: today.first()
         return "Сегодня ${today.size} ${plural(today.size)}. Главное: ${first.title}.\n" +
             today.take(6).joinToString("\n") { "• " + line(it) }
     }
@@ -80,9 +80,11 @@ object Briefing {
             done == 0 -> "Сегодня ничего не отмечено как сделанное. Ничего страшного, завтра новый день."
             else -> "Сегодня сделано: $done. Отличная работа!" + (if (prefs.streak > 1) " Серия: ${prefs.streak} дн. подряд." else "")
         }
-        if (left.isEmpty()) return head
+        val inbox = items.count { it.type == ItemType.NOTE && !it.done }
+        val inboxLine = if (inbox > 0) "\nВо входящих: $inbox. Скажите «разбери входящие»." else ""
+        if (left.isEmpty()) return head + inboxLine
         return "$head\nНе сделано:\n" + left.take(5).joinToString("\n") { "• " + it.title } +
-            "\nСкажите «перенеси … на завтра» или «сделал …»."
+            "\nСкажите «перенеси … на завтра» или «сделал …»." + inboxLine
     }
 
     fun plural(n: Int): String = when {

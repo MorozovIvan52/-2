@@ -1,5 +1,6 @@
 package ru.ivan.jarvis.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -23,4 +24,6 @@ data class Item(
     val allDay: Boolean = false,
     val repeat: Repeat = Repeat.NONE,
     val done: Boolean = false,
+    /** 1 — «срочно/важно»: первым в «что делать» и в утреннем плане. */
+    @ColumnInfo(defaultValue = "0") val priority: Int = 0,
 )

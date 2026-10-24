@@ -53,6 +53,8 @@ private sealed interface Pending {
     data class Confirm(val sms: PhoneController.PendingSms) : Pending
     data class SmsText(val sms: PhoneController.PendingSms) : Pending
     data class When(val itemId: Long, val title: String) : Pending
+    /** Разбор «Входящих»: очередь заметок и сколько уже разобрали. */
+    data class Inbox(val ids: List<Long>, val handled: Int) : Pending
 }
 
 /** Запрос разрешений, после которого команду надо повторить. */
@@ -163,6 +165,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random())
             return
         }
+        // 0а. Разбор входящих
+        if (INBOX.containsMatchIn(text.trim())) {
+            viewModelScope.launch { startInbox() }
+            return
+        }
+        // 0б. Поручение человеку: «поручи Саше поменять масло»
+        ru.ivan.jarvis.parse.DelegateParser.delegation(text)?.let { d ->
+            runDelegate(d, afterPermission)
+            return
+        }
         // 1. Команды управления телефоном — бесплатно, на устройстве
         ActionParser.parse(text)?.let { action ->
             runAction(text, action, afterPermission)
@@ -190,6 +202,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun handleRest(text: String, afterPermission: Boolean) {
+        // «Жду ответа от поставщика» — сам спрошу через 2 часа
+        ru.ivan.jarvis.parse.DelegateParser.waiting(text)?.let { w ->
+            viewModelScope.launch {
+                val c = CommandParser.parse("напомни ${w.what}") as? Command.Save
+                val due = c?.due ?: java.time.LocalDateTime.now().plusHours(2)
+                val what = (c?.title ?: w.what).replaceFirstChar { it.lowercase() }
+                val item = insertReminder("Ждём: $what", due, text)
+                answer("Хорошо, ${describeDue(item)} спрошу: пришёл ли $what?", item.id)
+            }
+            return
+        }
         // 1б. Просто название приложения: «телеграм», «ютуб»
         val bare = text.trim().replace(Regex("^(джарвис|jarvis)[\\s,.!]*", RegexOption.IGNORE_CASE), "").trim().trimEnd('.', '!', '?')
         if (bare.isNotEmpty() && bare.split(' ').size <= 2 && phone.hasApp(bare)) {
@@ -276,6 +299,91 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private suspend fun insertReminder(title: String, due: java.time.LocalDateTime, source: String, priority: Int = 0): Item {
+        val item = Item(type = ItemType.REMINDER, title = title.replaceFirstChar { it.uppercase() }, source = source, dueAt = due.toMillis(), priority = priority)
+        val saved = item.copy(id = dao.insert(item))
+        ReminderScheduler.schedule(appContext, saved)
+        syncCal(saved)
+        return saved
+    }
+
+    /** Поручение: SMS человеку с подтверждением + напоминание проверить через 2 часа. */
+    private fun runDelegate(d: ru.ivan.jarvis.parse.Delegation, afterPermission: Boolean) {
+        val msg = ru.ivan.jarvis.parse.DelegateParser.message(d)
+        val r = phone.perform(PhoneAction.Sms(d.who, msg), canAsk = !afterPermission)
+        if (r.missingPermissions.isNotEmpty()) {
+            permissionAsk = PermissionAsk(r.missingPermissions) { runDelegate(d, afterPermission = true) }
+            return
+        }
+        viewModelScope.launch {
+            val check = insertReminder("Проверить: ${d.name} — ${d.task}", java.time.LocalDateTime.now().plusHours(2), "поручение")
+            val sms = r.pendingSms
+            if (sms != null) {
+                askConfirm(sms, prefix = "Поручение для ${d.name}, проверю ${describeDue(check)}. Отправить: ")
+            } else {
+                answer("Записал поручение для ${d.name}, проверю ${describeDue(check)}. Номера нет в контактах, передайте сами.", check.id)
+            }
+        }
+    }
+
+    /** «Разбери входящие»: по одной заметке — когда напомнить, сделано, удалить или пропустить. */
+    private suspend fun startInbox() {
+        val ids = dao.all().filter { it.type == ItemType.NOTE && !it.done }.sortedWith(compareByDescending<Item> { it.priority }.thenBy { it.createdAt }).map { it.id }.take(15)
+        if (ids.isEmpty()) { answer("Входящие пусты. Отлично!"); return }
+        nextInbox(Pending.Inbox(ids, 0), "Во входящих ${ids.size}. ")
+    }
+
+    private suspend fun nextInbox(p: Pending.Inbox, prefix: String = "") {
+        val id = p.ids.firstOrNull()
+        val item = id?.let { dao.get(it) }
+        if (item == null) {
+            if (p.ids.size > 1) return nextInbox(p.copy(ids = p.ids.drop(1)), prefix)
+            pending = null
+            answer("${prefix}Разобрали ${p.handled}. Входящие чистые, молодец!")
+            return
+        }
+        pending = p
+        answer(
+            "$prefix«${item.title}». Когда напомнить?", item.id, followUp = true,
+            quick = listOf("Сегодня вечером", "Завтра утром", "Сделано", "Удалить", "Пропустить", "Хватит"),
+        )
+    }
+
+    private fun handleInbox(p: Pending.Inbox, t: String, text: String): Boolean {
+        val id = p.ids.first()
+        val rest = p.copy(ids = p.ids.drop(1), handled = p.handled + 1)
+        when {
+            Regex("^(хватит|стоп|все|всё|закончим|потом)").containsMatchIn(t) -> {
+                pending = null
+                answer("Хорошо, разобрали ${p.handled}. Остальное потом.")
+            }
+            Regex("^(сделано|сделал|готово|выполнено)").containsMatchIn(t) -> viewModelScope.launch {
+                dao.get(id)?.let { dao.update(it.copy(done = true)); prefs.markDone() }
+                nextInbox(rest, "${PRAISE.random()} ")
+            }
+            Regex("^(удали|удалить|не нужно|не надо|убери)").containsMatchIn(t) -> viewModelScope.launch {
+                dao.get(id)?.let { dao.delete(it) }
+                nextInbox(rest, "Удалил. ")
+            }
+            Regex("^(пропусти|пропустить|оставь|дальше|следующ)").containsMatchIn(t) -> viewModelScope.launch {
+                nextInbox(rest.copy(handled = p.handled))
+            }
+            else -> {
+                val c = CommandParser.parse("напомни $text ЗАДАЧА") as? Command.Save ?: return false
+                if (c.due == null || !c.title.equals("ЗАДАЧА", ignoreCase = true)) return false
+                viewModelScope.launch {
+                    val item = dao.get(id) ?: return@launch nextInbox(rest)
+                    val moved = item.copy(type = ItemType.REMINDER, dueAt = c.due.toMillis(), allDay = c.allDay, repeat = c.repeat)
+                    dao.update(moved)
+                    ReminderScheduler.schedule(appContext, moved)
+                    syncCal(moved)
+                    nextInbox(rest, "Напомню ${describeDue(moved)}. ")
+                }
+            }
+        }
+        return true
+    }
+
     // Действия из вкладки «Сервис»
     fun saveOrder(o: ru.ivan.jarvis.service.Order) {
         viewModelScope.launch {
@@ -323,6 +431,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 askConfirm(p.sms.copy(text = text.trim()))
                 return true
             }
+            is Pending.Inbox -> return handleInbox(p, t, text)
             is Pending.When -> {
                 if (no) { answer("Хорошо, оставил в заметках"); return true }
                 val c = CommandParser.parse("напомни $text ЗАДАЧА") as? Command.Save ?: return false
@@ -346,7 +455,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ask.retry()
     }
 
-    private suspend fun saveOrQuery(text: String, announce: Boolean = true): String {
+    private suspend fun saveOrQuery(rawText: String, announce: Boolean = true): String {
+        // «срочно», «важно» — пометка приоритета, в название не попадает
+        val (urgent, text) = ru.ivan.jarvis.parse.DelegateParser.priority(rawText).let { (u, t) -> u to t.ifBlank { rawText } }
         return when (val c = CommandParser.parse(text)) {
             is Command.Save -> {
                 // «запиши в календарь …» без даты — событие на сегодня, весь день
@@ -358,6 +469,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     dueAt = if (toCalendar) LocalDate.now().atTime(9, 0).toMillis() else c.due?.toMillis(),
                     allDay = toCalendar || c.allDay,
                     repeat = c.repeat,
+                    priority = if (urgent) 1 else 0,
                 )
                 val saved = item.copy(id = dao.insert(item))
                 ReminderScheduler.schedule(appContext, saved)
@@ -542,12 +654,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val today = LocalDate.now()
         val active = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null }
         val overdue = active.filter { it.repeat == ru.ivan.jarvis.data.Repeat.NONE && it.dueAt!! < now && !it.allDay }
-            .sortedBy { it.dueAt }
+            .sortedWith(compareByDescending<Item> { it.priority }.thenBy { it.dueAt })
         val todayLeft = active.filter { it.occursOn(today) && (it.allDay || it.dueAt!! >= now) }
-            .sortedWith(compareBy<Item>({ !it.allDay }, { it.dueAt }))
+            .sortedWith(compareByDescending<Item> { it.priority }.thenBy { !it.allDay }.thenBy { it.dueAt })
         val first = overdue.firstOrNull() ?: todayLeft.firstOrNull()
         if (first == null) {
-            val note = items.value.firstOrNull { it.type == ItemType.NOTE }
+            val note = items.value.filter { it.type == ItemType.NOTE && !it.done }.maxByOrNull { it.priority }
             return if (note != null) "На сегодня дел нет. Можно заняться заметкой: ${note.title}. Скажите «фокус», и я засеку 25 минут."
             else "Дел нет. Отдохните или скажите «фокус», чтобы поработать 25 минут."
         }
@@ -613,6 +725,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val HELP = "Я умею: записывать заметки и напоминания (они попадают и в календарь телефона), ставить будильник на любое время и по будням, открывать приложения, звонить, писать SMS, " +
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
+            "Поручения: «поручи Саше поменять масло на Ларгусе», «жду ответа от поставщика», «разбери входящие», «срочно позвонить в банк». " +
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок. " +
@@ -623,6 +736,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val YES = Regex("^(да|ага|угу|отправь|отправляй|давай|конечно|верно|подтверждаю|ок|окей|точно|yes)(?![\\p{L}])")
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
+        private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
         private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")
     }
 }

@@ -165,6 +165,12 @@ fun HomeScreen(
             )
         }
         item { FocusCard(focus, onStartFocus, onStopFocus, onRefreshFocus, onAsk = onText) }
+        val inbox = items.count { it.type == ItemType.NOTE && !it.done }
+        if (inbox > 0) item {
+            OutlinedButton(onClick = { onText("разбери входящие") }, modifier = Modifier.fillMaxWidth()) {
+                Text("📥 Во входящих: $inbox — разобрать за 2 минуты")
+            }
+        }
         if (feedback != null) item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
