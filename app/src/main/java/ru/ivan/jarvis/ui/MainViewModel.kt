@@ -55,6 +55,8 @@ private sealed interface Pending {
     data class When(val itemId: Long, val title: String) : Pending
     /** Разбор «Входящих»: очередь заметок и сколько уже разобрали. */
     data class Inbox(val ids: List<Long>, val handled: Int) : Pending
+    data class ReplyText(val msg: ru.ivan.jarvis.messages.InMessage) : Pending
+    data class ReplyConfirm(val msg: ru.ivan.jarvis.messages.InMessage, val text: String) : Pending
 }
 
 /** Запрос разрешений, после которого команду надо повторить. */
@@ -97,6 +99,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var fromVoice = false
+    val journal = ru.ivan.jarvis.data.Journal(app)
+    /** Фраза, на которую ещё не записан ответ в журнал. */
+    private var lastSaid: String? = null
     private var pending: Pending? = null
     private var continueAfterSpeech = false
 
@@ -131,6 +136,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         restore: Item? = null, quick: List<String> = emptyList(), links: List<Pair<String, String>> = emptyList(),
     ) {
         feedback = Feedback(text, itemId, restore, quick, links)
+        lastSaid?.let { journal.add(it, text); lastSaid = null }
         val willSpeak = speakEnabled && speak
         continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && (followUp || text.trimEnd().endsWith("?"))
         if (willSpeak) speaker.say(text)
@@ -152,8 +158,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         handleInternal(text, afterPermission = false)
     }
 
+    /** Команда из режима «Слушать всегда» (уже без слова «Джарвис»). */
+    fun handleExternalVoice(text: String) = handleVoice(text)
+
+    /** «Не так» — пометить последнюю команду как понятую неправильно. */
+    fun markWrong() {
+        val e = journal.markLastWrong()
+        fromVoice = false
+        feedback = Feedback(
+            if (e != null) "Запомнил, что «${e.said}» я понял неправильно. Скажите иначе. Журнал можно скопировать в настройках и прислать разработчику."
+            else "Журнал пуст"
+        )
+    }
+
     private fun handleInternal(text: String, afterPermission: Boolean) {
         if (text.isBlank()) return
+        if (!afterPermission) lastSaid = text
         // 0. Ответ на уточняющий вопрос Джарвиса («Отправить?», «Когда напомнить?»)
         pending?.let { p ->
             pending = null
@@ -168,6 +188,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 0а. Разбор входящих
         if (INBOX.containsMatchIn(text.trim())) {
             viewModelScope.launch { startInbox() }
+            return
+        }
+        // 0в. Сообщения мессенджеров: «прочитай сообщения», «ответь Саше: ок»
+        ru.ivan.jarvis.parse.MessageParser.parse(text)?.let { cmd ->
+            handleMessages(cmd, text, afterPermission)
             return
         }
         // 0б. Поручение человеку: «поручи Саше поменять масло»
@@ -297,6 +322,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val q = if (prefix != null) "$prefix«${sms.text}»?" else "$where для ${sms.who}: «${sms.text}». Отправить?"
             answer(q, followUp = true, quick = listOf("Да, отправь", "Нет"))
         }
+    }
+
+    private fun handleMessages(cmd: ru.ivan.jarvis.parse.MessageCommand, text: String, afterPermission: Boolean) {
+        val ml = ru.ivan.jarvis.messages.MessageListener
+        if (!ml.enabled(appContext)) {
+            runCatching { (ru.ivan.jarvis.JarvisApp.currentActivity ?: return@runCatching).startActivity(ml.settingsIntent()) }
+            answer("Чтобы читать сообщения, разрешите Джарвису доступ к уведомлениям — я открыл настройки. Включите «Джарвис» и вернитесь.")
+            return
+        }
+        when (cmd) {
+            is ru.ivan.jarvis.parse.MessageCommand.Read -> {
+                val list = ml.recent(cmd.from, 5)
+                if (list.isEmpty()) {
+                    answer(if (cmd.from.isBlank()) "Новых сообщений нет." else "От ${cmd.from} сообщений нет.")
+                    return
+                }
+                val spoken = list.joinToString(" ") { m -> "${m.sender} в ${m.app}: ${m.text.take(200)}." }
+                val first = list.first()
+                answer(
+                    (if (list.size > 1) "Сообщений: ${list.size}. " else "") + spoken, followUp = true,
+                    quick = listOf("Ответь ${first.sender.substringBefore(' ')}", "Хватит"),
+                )
+            }
+            is ru.ivan.jarvis.parse.MessageCommand.Reply -> {
+                val target = ml.replyTarget(cmd.who)
+                if (target == null) {
+                    if (cmd.who.isNotBlank()) {
+                        // В уведомлениях нет — пишем обычное SMS по контакту
+                        runAction(text, PhoneAction.Sms(cmd.who, cmd.text), afterPermission)
+                    } else answer("Не нашёл, кому ответить: в уведомлениях нет свежих сообщений.")
+                    return
+                }
+                if (cmd.text.isBlank()) {
+                    pending = Pending.ReplyText(target)
+                    answer("Что ответить ${target.sender}?", followUp = true, quick = listOf("Отмена"))
+                } else askReply(target, cmd.text)
+            }
+        }
+    }
+
+    private fun askReply(msg: ru.ivan.jarvis.messages.InMessage, text: String) {
+        pending = Pending.ReplyConfirm(msg, text)
+        answer("Ответить ${msg.sender} в ${msg.app}: «$text»?", followUp = true, quick = listOf("Да, отправь", "Нет"))
     }
 
     private suspend fun insertReminder(title: String, due: java.time.LocalDateTime, source: String, priority: Int = 0): Item {
@@ -432,6 +500,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is Pending.Inbox -> return handleInbox(p, t, text)
+            is Pending.ReplyText -> {
+                if (no) { answer("Отменил"); return true }
+                askReply(p.msg, text.trim())
+                return true
+            }
+            is Pending.ReplyConfirm -> {
+                if (yes) {
+                    val ok = ru.ivan.jarvis.messages.MessageListener.reply(appContext, p.msg, p.text)
+                    answer(if (ok) "Ответил ${p.msg.sender}" else "Не получилось ответить из уведомления. Откройте ${p.msg.app} и ответьте сами.")
+                    return true
+                }
+                if (no) { answer("Хорошо, не отвечаю"); return true }
+                return false
+            }
             is Pending.When -> {
                 if (no) { answer("Хорошо, оставил в заметках"); return true }
                 val c = CommandParser.parse("напомни $text ЗАДАЧА") as? Command.Save ?: return false
@@ -725,6 +807,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val HELP = "Я умею: записывать заметки и напоминания (они попадают и в календарь телефона), ставить будильник на любое время и по будням, открывать приложения, звонить, писать SMS, " +
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
+            "Без рук: включите в настройках «Слушать всегда» и говорите «Джарвис, …». " +
+            "Сообщения: «прочитай сообщения», «ответь Саше: буду через час». " +
             "Поручения: «поручи Саше поменять масло на Ларгусе», «жду ответа от поставщика», «разбери входящие», «срочно позвонить в банк». " +
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +

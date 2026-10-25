@@ -71,18 +71,25 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.refreshFocus()
+        // Режим «Слушать всегда» был включён — поднимаем после перезапуска телефона/приложения
+        if (vm.prefs.handsFree && !ru.ivan.jarvis.voice.HandsFreeService.running &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) runCatching { ru.ivan.jarvis.voice.HandsFreeService.start(this) }
     }
 
     private fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             ACTION_LISTEN, Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND -> listenRequests++
             ACTION_WHAT_NOW -> vm.sayWhatNow()
+            ACTION_COMMAND -> intent.getStringExtra(EXTRA_TEXT)?.let(vm::handleExternalVoice)
         }
     }
 
     companion object {
         const val ACTION_LISTEN = "ru.ivan.jarvis.LISTEN"
         const val ACTION_WHAT_NOW = "ru.ivan.jarvis.WHAT_NOW"
+        const val ACTION_COMMAND = "ru.ivan.jarvis.COMMAND"
+        const val EXTRA_TEXT = "text"
     }
 }
 
@@ -198,6 +205,7 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     onMic = ::onMic,
                     onText = vm::handle,
                     onUndo = vm::undo,
+                    onWrong = vm::markWrong,
                     onToggleSpeak = vm::toggleSpeak,
                     onEdit = { editing = it },
                     onToggleDone = vm::toggleDone,

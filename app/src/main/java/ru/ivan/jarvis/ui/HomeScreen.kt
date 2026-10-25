@@ -92,6 +92,7 @@ fun HomeScreen(
     onMic: () -> Unit,
     onText: (String) -> Unit,
     onUndo: () -> Unit,
+    onWrong: () -> Unit = {},
     onToggleSpeak: () -> Unit,
     onEdit: (Item) -> Unit,
     onToggleDone: (Item) -> Unit,
@@ -176,6 +177,7 @@ fun HomeScreen(
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(feedback.text, Modifier.weight(1f).padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
                     if (feedback.itemId != null) TextButton(onClick = onUndo) { Text("Отменить") }
+                    TextButton(onClick = onWrong) { Text("Не так") }
                 }
                 if (feedback.links.isNotEmpty()) {
                     val ctx = androidx.compose.ui.platform.LocalContext.current

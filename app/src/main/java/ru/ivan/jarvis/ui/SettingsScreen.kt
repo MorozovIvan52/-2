@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -123,6 +124,18 @@ fun SettingsScreen(vm: MainViewModel) {
                 "Сегодня: ${prefs.tokensToday} токенов · всего: ${prefs.tokensTotal} · озвучено Яндексом: ${prefs.ttsCharsTotal} симв.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        Section("Без рук и сообщения") {
+            HandsFreeBlock(vm)
+        }
+
+        Section("Журнал команд") {
+            JournalBlock(vm)
+        }
+
+        Section("Резервная копия") {
+            BackupBlock()
         }
 
         Section("Проверка: что разрешено") {
@@ -230,6 +243,94 @@ private fun Section(title: String, content: @Composable () -> Unit) {
             content()
         }
     }
+}
+
+@Composable
+private fun HandsFreeBlock(vm: MainViewModel) {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(vm.prefs.handsFree) }
+    var tick by remember { mutableIntStateOf(0) }
+    val mic = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) { vm.prefs.handsFree = true; on = true; ru.ivan.jarvis.voice.HandsFreeService.start(context) } }
+    val overlay = android.provider.Settings.canDrawOverlays(context)
+    SwitchRow("Слушать всегда: «Джарвис, …» без касаний", on) { v ->
+        if (v) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                mic.launch(android.Manifest.permission.RECORD_AUDIO)
+            } else {
+                vm.prefs.handsFree = true; on = true
+                ru.ivan.jarvis.voice.HandsFreeService.start(context)
+            }
+        } else {
+            vm.prefs.handsFree = false; on = false
+            ru.ivan.jarvis.voice.HandsFreeService.stop(context)
+        }
+    }
+    Text(
+        "Работает, пока висит уведомление «Джарвис слушает». Расходует батарею; на ночь лучше выключать. Некоторые телефоны тихо пикают при каждом прослушивании.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    key(tick) {
+        if (!overlay) {
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + context.packageName)))
+                }
+                tick++
+            }, modifier = Modifier.fillMaxWidth()) { Text("Разрешить «Поверх других окон» (чтобы отвечать из фона)") }
+        }
+        val listener = ru.ivan.jarvis.messages.MessageListener.enabled(context)
+        OutlinedButton(onClick = { runCatching { context.startActivity(ru.ivan.jarvis.messages.MessageListener.settingsIntent()) }; tick++ },
+            modifier = Modifier.fillMaxWidth()) {
+            Text(if (listener) "✅ Доступ к уведомлениям есть (читаю сообщения)" else "Разрешить читать сообщения (доступ к уведомлениям)")
+        }
+    }
+}
+
+@Composable
+private fun JournalBlock(vm: MainViewModel) {
+    val context = LocalContext.current
+    val entries = remember { vm.journal.all().take(15) }
+    if (entries.isEmpty()) Text("Пока пусто", style = MaterialTheme.typography.bodySmall)
+    entries.forEach { e ->
+        Text((if (e.wrong) "❌ " else "• ") + "«${e.said}» → ${e.reply.take(90)}", style = MaterialTheme.typography.bodySmall)
+    }
+    OutlinedButton(onClick = {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Журнал Джарвиса", vm.journal.export()))
+        android.widget.Toast.makeText(context, "Журнал скопирован — вставьте его в чат разработчику", android.widget.Toast.LENGTH_LONG).show()
+    }, modifier = Modifier.fillMaxWidth()) { Text("Скопировать журнал") }
+}
+
+@Composable
+private fun BackupBlock() {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var msg by remember { mutableStateOf<String?>(null) }
+    val create = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val n = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { ru.ivan.jarvis.data.Backup.export(context, uri) }.getOrDefault(-1) }
+            msg = if (n >= 0) "Сохранено записей: $n" else "Не удалось сохранить"
+        }
+    }
+    val open = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val n = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { ru.ivan.jarvis.data.Backup.import(context, uri) }.getOrDefault(-1) }
+            msg = if (n >= 0) "Восстановлено записей: $n" else "Это не файл копии Джарвиса"
+        }
+    }
+    Text("Все заметки, напоминания, заказы и касса в одном файле. Сохраните на Google Диск или в Telegram «Избранное».",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { create.launch("jarvis-${java.time.LocalDate.now()}.json") }) { Text("Сохранить копию") }
+        OutlinedButton(onClick = { open.launch(arrayOf("application/json", "*/*")) }) { Text("Восстановить") }
+    }
+    msg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
 }
 
 @Composable
