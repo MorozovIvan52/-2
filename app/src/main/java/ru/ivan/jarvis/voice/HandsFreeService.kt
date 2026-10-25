@@ -22,6 +22,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import ru.ivan.jarvis.JarvisApp
 import ru.ivan.jarvis.R
+import ru.ivan.jarvis.parse.WakeWord
 import ru.ivan.jarvis.ui.MainActivity
 
 /**
