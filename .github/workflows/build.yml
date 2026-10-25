@@ -22,7 +22,19 @@ jobs:
           # Секреты подставляются только в приватном репозитории, чтобы ключи не попали в открытый APK
           YANDEX_API_KEY: ${{ github.event.repository.private && secrets.YANDEX_API_KEY || '' }}
           YANDEX_FOLDER_ID: ${{ github.event.repository.private && secrets.YANDEX_FOLDER_ID || '' }}
-        run: ./gradlew assembleDebug testDebugUnitTest
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug testDebugUnitTest 2>&1 | tee build.log
+      - name: Publish build errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Exception" -A4 build.log | head -200 > errors.txt || true
+          [ -s errors.txt ] || tail -150 build.log > errors.txt
+          gh release delete ci-errors --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create ci-errors errors.txt --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Ошибки сборки" --notes "$GITHUB_SHA" --prerelease
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-debug-apk
