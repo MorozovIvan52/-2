@@ -204,6 +204,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun handleInternal(text: String, afterPermission: Boolean) {
         if (text.isBlank()) return
         if (!afterPermission) lastSaid = text
+        if (text.trim().equals(SAVE_NOTE, ignoreCase = true) || SAVE_NOTE_RX.matches(text.trim())) {
+            viewModelScope.launch { saveWebNote() }
+            return
+        }
         // 0. Ответ на уточняющий вопрос Джарвиса («Отправить?», «Когда напомнить?»)
         pending?.let { p ->
             pending = null
@@ -385,8 +389,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         answer(if (ok) "Готово" else fail, speak = !ok)
     }
 
+    /** Последний ответ из интернета — для кнопки «Сохранить в заметку». */
+    private var lastWeb: Pair<String, ru.ivan.jarvis.ai.WebSearch.Answer>? = null
+
+    private suspend fun saveWebNote() {
+        val (q, r) = lastWeb ?: return answer("Нечего сохранять — сначала спросите что-нибудь")
+        val date = LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+        val links = r.hits.take(5).joinToString("\n") { "${ru.ivan.jarvis.parse.AutoSearch.sourceName(it.domain)}: ${it.url}" }
+        val title = "🔎 " + ru.ivan.jarvis.parse.SearchParse.cleanQuery(q).replaceFirstChar { it.uppercase() }
+        // Заметка целиком в заголовке — его видно и можно править в карточке заметки
+        val saved = Item(type = ItemType.NOTE, title = "$title\n${r.text}\n$links\nНайдено $date", source = q)
+        dao.insert(saved)
+        lastWeb = null
+        answer("Сохранил в заметки: ${title.removePrefix("🔎 ")}")
+    }
+
     private suspend fun webAnswer(question: String) {
         if (!ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) {
+            // Без сети — сначала смотрим в кэш поиска (Room): повторный вопрос отвечается и офлайн
+            runCatching { web.ask(question) }.getOrNull()?.let { r ->
+                lastWeb = question to r
+                answer(r.text, links = webLinks(r), quick = listOf(SAVE_NOTE), source = "💾 Из памяти поиска (нет интернета)")
+                return
+            }
             dao.insert(Item(type = ItemType.NOTE, title = "Найти: " + question.replaceFirstChar { it.lowercase() }, source = question))
             answer("Нет интернета. Записал вопрос в заметки, спросите, когда появится связь.")
             return
@@ -401,8 +426,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             answer("Не смог найти ответ сам, открыл поиск", speak = false)
             return
         }
-        answer(r.text, followUp = true, links = r.hits.take(3).map { it.domain to it.url },
-            source = if (r.byAi) "🌐 Интернет + ИИ" else "🌐 Интернет (без ИИ — вставьте ключ, будет пересказ)")
+        if (r.hits.isNotEmpty()) lastWeb = question to r
+        val src = when {
+            r.fromCache -> "💾 Из памяти поиска"
+            r.byAi -> "🌐 Интернет + ИИ"
+            else -> "🌐 Интернет (без ИИ — вставьте ключ, будет пересказ)"
+        } + (r.note?.let { " · ⚠️ $it" } ?: "")
+        answer(r.text, followUp = true, links = webLinks(r), quick = if (r.hits.isNotEmpty()) listOf(SAVE_NOTE) else emptyList(), source = src)
+    }
+
+    /** Кнопки-ссылки: «Drive2 · заголовок». */
+    private fun webLinks(r: ru.ivan.jarvis.ai.WebSearch.Answer) = r.hits.take(5).map {
+        "${ru.ivan.jarvis.parse.AutoSearch.sourceName(it.domain)} · ${it.title.take(28)}" to it.url
     }
 
     private fun askConfirm(sms: PhoneController.PendingSms, prefix: String? = null) {
@@ -957,6 +992,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
+        const val SAVE_NOTE = "Сохранить в заметку"
+        private val SAVE_NOTE_RX = Regex("^(джарвис[, ]*)?(сохрани|запиши)\\s+(это|ответ|найденное)(\\s+в\\s+заметк\\p{L}*)?[.!]?$", RegexOption.IGNORE_CASE)
         private val LOCAL_LEAD = Regex("^(джарвис[, ]*)?(напомни|напоминай|запиши|запомни|добавь|сохрани)", RegexOption.IGNORE_CASE)
         private val PLAN_WORDS = Regex("(план|день|дня|задач|дела|успеть|приоритет|расписани)", RegexOption.IGNORE_CASE)
         private val YES = Regex("^(да|ага|угу|отправь|отправляй|давай|конечно|верно|подтверждаю|ок|окей|точно|yes)(?![\\p{L}])")

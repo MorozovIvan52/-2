@@ -14,10 +14,11 @@ class Converters {
     @TypeConverter fun stringToRepeat(s: String): Repeat = Repeat.valueOf(s)
 }
 
-@Database(entities = [Item::class], version = 2, exportSchema = false)
+@Database(entities = [Item::class, SearchEntry::class], version = 3, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun items(): ItemDao
+    abstract fun search(): SearchDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -29,9 +30,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v15: кэш поиска. Дела не трогаем. */
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `search_cache` (`key` TEXT NOT NULL, `query` TEXT NOT NULL, `answer` TEXT NOT NULL, " +
+                        "`links` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`key`))"
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "jarvis.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build().also { instance = it }
         }
     }

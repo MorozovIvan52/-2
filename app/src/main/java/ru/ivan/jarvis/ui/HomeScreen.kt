@@ -211,7 +211,7 @@ fun HomeScreen(
                                 runCatching {
                                     ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
                                 }
-                            }, label = { Text("🔗 $domain") })
+                            }, label = { Text("🔗 $domain", maxLines = 1) })
                         }
                     }
                 }
