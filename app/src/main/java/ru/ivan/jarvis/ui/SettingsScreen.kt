@@ -126,6 +126,9 @@ fun SettingsScreen(vm: MainViewModel) {
             )
         }
 
+        Section("Управление экраном") {
+            ScreenControlBlock()
+        }
         Section("Без рук и сообщения") {
             HandsFreeBlock(vm)
         }
@@ -334,6 +337,37 @@ private fun BackupBlock() {
 }
 
 @Composable
+private fun ScreenControlBlock() {
+    val context = LocalContext.current
+    var tick by remember { mutableIntStateOf(0) }
+    key(tick) {
+        val on = ru.ivan.jarvis.actions.JarvisAccessibility.enabled(context)
+        Text(
+            if (on) "✅ Включено: «назад», «нажми Принять», «прокрути вниз», сам жму «Отправить» в Ватсапе после вашего «да»"
+            else "❌ Выключено. Включите, чтобы Джарвис нажимал кнопки голосом и сам отправлял сообщения в Ватсап после вашего «да».",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (!on) {
+            Text(
+                "1) Нажмите кнопку ниже → «Установленные приложения» → Джарвис → включить.\n" +
+                    "2) Если переключатель серый (Android 13+): Настройки → Приложения → Джарвис → ⋮ → «Разрешить ограниченные настройки», затем шаг 1.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedButton(onClick = {
+            runCatching { context.startActivity(ru.ivan.jarvis.actions.JarvisAccessibility.settingsIntent()) }
+            tick++
+        }, modifier = Modifier.fillMaxWidth()) { Text(if (on) "Открыть спецвозможности" else "Включить в спецвозможностях") }
+        if (!on) OutlinedButton(onClick = {
+            runCatching {
+                context.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + context.packageName)))
+            }
+            tick++
+        }, modifier = Modifier.fillMaxWidth()) { Text("О приложении (ограниченные настройки)") }
+    }
+}
+
+@Composable
 private fun DiagnosticsBlock() {
     val context = LocalContext.current
     var tick by remember { mutableIntStateOf(0) }
@@ -364,6 +398,10 @@ private fun DiagnosticsBlock() {
         Text((if (apps > 3) "✅ " else "❌ ") + "Видно приложений: $apps", style = MaterialTheme.typography.bodyMedium)
         val speech = android.speech.SpeechRecognizer.isRecognitionAvailable(context)
         Text((if (speech) "✅ " else "❌ ") + "Распознавание речи", style = MaterialTheme.typography.bodyMedium)
+        val net = ru.ivan.jarvis.actions.Net.online(context)
+        Text((if (net) "✅ " else "❌ ") + "Интернет (поиск и ИИ)", style = MaterialTheme.typography.bodyMedium)
+        val a11y = ru.ivan.jarvis.actions.JarvisAccessibility.enabled(context)
+        Text((if (a11y) "✅ " else "❌ ") + "Управление экраном (спецвозможности)", style = MaterialTheme.typography.bodyMedium)
     }
     val missing = rows.filter { !it.second && it.third.isNotEmpty() }.map { it.third }
     if (missing.isNotEmpty()) {

@@ -13,8 +13,8 @@ android {
         applicationId = "ru.ivan.jarvis"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "9.0"
+        versionCode = 10
+        versionName = "10.0"
         // Ключи Яндекса по умолчанию: подставляются только при сборке приватного репозитория из секретов CI.
         // В коде их нет; без секретов поля пустые и ключ вводится в «Настройках».
         buildConfigField("String", "YANDEX_API_KEY", "\"${System.getenv("YANDEX_API_KEY").orEmpty()}\"")

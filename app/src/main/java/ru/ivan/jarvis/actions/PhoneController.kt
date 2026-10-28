@@ -187,8 +187,10 @@ class PhoneController(private val context: Context) {
             if (digits.length == 10) digits = "7$digits"
             val uri = Uri.parse("https://wa.me/$digits?text=" + Uri.encode(p.text))
             val wa = Intent(Intent.ACTION_VIEW, uri).setPackage("com.whatsapp")
-            return if (start(wa) || start(Intent(Intent.ACTION_VIEW, uri))) Result("Открыл чат с ${p.who} в Ватсапе, нажмите «Отправить»")
-            else Result("Ватсап не установлен")
+            if (!(start(wa) || start(Intent(Intent.ACTION_VIEW, uri)))) return Result("Ватсап не установлен")
+            // Пользователь уже сказал «да» — служба спецвозможностей сама нажмёт «Отправить», если включена
+            return if (JarvisAccessibility.armSend("com.whatsapp")) Result("Отправляю ${p.who} в Ватсап")
+            else Result("Открыл чат с ${p.who} в Ватсапе, нажмите «Отправить». Чтобы я жал сам — включите Джарвиса в спецвозможностях")
         }
         if (granted(Manifest.permission.SEND_SMS)) {
             return try {

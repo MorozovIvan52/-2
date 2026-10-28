@@ -200,6 +200,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             runDelegate(d, afterPermission)
             return
         }
+        // 0г. Экран: «назад», «нажми Принять», «прокрути вниз» — через службу спецвозможностей
+        ru.ivan.jarvis.parse.ScreenParser.parse(text)?.let { cmd ->
+            runScreen(cmd)
+            return
+        }
         // 1. Команды управления телефоном — бесплатно, на устройстве
         ActionParser.parse(text)?.let { action ->
             runAction(text, action, afterPermission)
@@ -259,8 +264,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (prefs.aiOn && prefs.yandexReady && Assistant.shouldAsk(text) &&
                 (CommandParser.parse(text) as? Command.Save)?.due == null
             ) {
-                askAi(text)
-                return@launch
+                if (ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) { askAi(text); return@launch }
+                // Без интернета ИИ недоступен — сохраняем фразу как обычно, ничего не теряем
             }
             // 4. Заметки, напоминания, «что у меня завтра»
             saveOrQuery(text)
@@ -298,7 +303,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Поиск в интернете с коротким ответом голосом и ссылками на источники. */
+    private fun runScreen(cmd: ru.ivan.jarvis.parse.ScreenCommand) {
+        val a11y = ru.ivan.jarvis.actions.JarvisAccessibility
+        if (!a11y.running()) {
+            answer("Для этого включите Джарвиса в спецвозможностях: Настройки → раздел «Управление экраном».", quick = listOf("Что ты умеешь"))
+            return
+        }
+        val ok = when (cmd) {
+            is ru.ivan.jarvis.parse.ScreenCommand.Global -> a11y.global(cmd.action)
+            is ru.ivan.jarvis.parse.ScreenCommand.Click -> a11y.click(cmd.text)
+            is ru.ivan.jarvis.parse.ScreenCommand.Scroll -> a11y.scroll(cmd.forward)
+        }
+        val fail = when (cmd) {
+            is ru.ivan.jarvis.parse.ScreenCommand.Click -> "Не нашёл на экране «${cmd.text}»"
+            is ru.ivan.jarvis.parse.ScreenCommand.Scroll -> "Здесь нечего прокручивать"
+            else -> "Телефон не дал это сделать"
+        }
+        answer(if (ok) "Готово" else fail, speak = !ok)
+    }
+
     private suspend fun webAnswer(question: String) {
+        if (!ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) {
+            dao.insert(Item(type = ItemType.NOTE, title = "Найти: " + question.replaceFirstChar { it.lowercase() }, source = question))
+            answer("Нет интернета. Записал вопрос в заметки, спросите, когда появится связь.")
+            return
+        }
         thinking = true
         feedback = Feedback("Ищу в интернете…")
         val r = runCatching { web.ask(question) }.getOrNull()
@@ -809,6 +838,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
             "Без рук: включите в настройках «Слушать всегда» и говорите «Джарвис, …». " +
             "Сообщения: «прочитай сообщения», «ответь Саше: буду через час». " +
+            "Экран (после включения в спецвозможностях): «назад», «на главный экран», «нажми Принять», «прокрути вниз», «сделай скриншот». " +
             "Поручения: «поручи Саше поменять масло на Ларгусе», «жду ответа от поставщика», «разбери входящие», «срочно позвонить в банк». " +
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +

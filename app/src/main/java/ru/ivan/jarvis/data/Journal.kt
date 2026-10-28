@@ -23,7 +23,10 @@ class Journal(context: Context) {
         p.edit().putString("list", arr.toString()).apply()
     }
 
-    fun add(said: String, reply: String) = save(listOf(Entry(System.currentTimeMillis(), said, reply.take(300), false)) + all())
+    // Телефоны, госномера и фамилии клиентов в журнал не попадают в открытом виде
+    fun add(said: String, reply: String) = save(listOf(
+        Entry(System.currentTimeMillis(), ru.ivan.jarvis.parse.Privacy.mask(said), ru.ivan.jarvis.parse.Privacy.mask(reply.take(300)), false)
+    ) + all())
 
     fun markLastWrong(): Entry? {
         val list = all().toMutableList()
@@ -37,6 +40,7 @@ class Journal(context: Context) {
     fun export(): String = all().joinToString("\n") { e ->
         val t = java.time.Instant.ofEpochMilli(e.time).atZone(java.time.ZoneId.systemDefault())
             .format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm"))
-        (if (e.wrong) "❌ " else "") + "$t «${e.said}» → ${e.reply}"
+        // mask повторно — для записей, сделанных до версии 10
+        (if (e.wrong) "❌ " else "") + "$t «${ru.ivan.jarvis.parse.Privacy.mask(e.said)}» → ${ru.ivan.jarvis.parse.Privacy.mask(e.reply)}"
     }
 }

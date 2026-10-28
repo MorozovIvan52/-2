@@ -7,4 +7,5 @@
     <string name="action_snooze">Через 10 мин</string>
     <string name="shortcut_listen">Голосовая команда</string>
     <string name="widget_desc">Следующее дело и голосовая команда</string>
+    <string name="accessibility_desc">Джарвис нажимает кнопки по вашей голосовой команде: «назад», «нажми Принять», «прокрути вниз», и сам жмёт «Отправить» в Ватсапе после вашего «да». Текст с экрана не сохраняется и никуда не отправляется.</string>
 </resources>

@@ -44,13 +44,13 @@ class HandsFreeService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startInForeground()
+        if (!startInForeground()) return START_NOT_STICKY
         running = true
         scheduleListen(500)
         return START_STICKY
     }
 
-    private fun startInForeground() {
+    private fun startInForeground(): Boolean {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Слушаю «Джарвис»", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 9001, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -63,8 +63,13 @@ class HandsFreeService : Service() {
             .setContentIntent(open)
             .addAction(0, "Выключить", stop)
             .build()
-        if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        else startForeground(NOTIF_ID, n)
+        // Android 14+: без разрешения на микрофон или при запуске из фона startForeground бросает SecurityException
+        val ok = runCatching {
+            if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(NOTIF_ID, n)
+        }.isSuccess
+        if (!ok) { stopped = true; stopSelf() }
+        return ok
     }
 
     private fun scheduleListen(delay: Long) {
@@ -158,7 +163,14 @@ class HandsFreeService : Service() {
         @Volatile var running = false
             private set
 
-        fun start(context: Context) = ContextCompat.startForegroundService(context, Intent(context, HandsFreeService::class.java))
+        fun start(context: Context) {
+            // Разрешение на микрофон отозвали — не запускаем, иначе Android закроет приложение с ошибкой
+            if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                ru.ivan.jarvis.settings.Prefs(context).handsFree = false
+                return
+            }
+            runCatching { ContextCompat.startForegroundService(context, Intent(context, HandsFreeService::class.java)) }
+        }
         fun stop(context: Context) = context.stopService(Intent(context, HandsFreeService::class.java))
     }
 }
