@@ -21,8 +21,15 @@ jobs:
       # Ключ хранится в кэше Actions, а не в репозитории.
       - uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: jarvis-debug-keystore-v1
+          path: ~/jarvis-keys
+          key: jarvis-debug-keystore-v2
+      - name: Prepare signing key
+        run: |
+          mkdir -p ~/jarvis-keys
+          [ -f ~/jarvis-keys/debug.keystore ] || keytool -genkeypair -keystore ~/jarvis-keys/debug.keystore \
+            -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          echo "JARVIS_KEYSTORE=$HOME/jarvis-keys/debug.keystore" >> "$GITHUB_ENV"
       - name: Build debug APK and run tests
         env:
           # Секреты подставляются только в приватном репозитории, чтобы ключи не попали в открытый APK

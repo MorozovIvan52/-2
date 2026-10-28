@@ -21,6 +21,16 @@ android {
         buildConfigField("String", "YANDEX_FOLDER_ID", "\"${System.getenv("YANDEX_FOLDER_ID").orEmpty()}\"")
     }
 
+    // В CI ключ подписи берётся из кэша Actions (JARVIS_KEYSTORE), чтобы все сборки
+    // были подписаны одинаково и обновление ставилось поверх. Локально — обычный debug-ключ.
+    System.getenv("JARVIS_KEYSTORE")?.let { path ->
+        signingConfigs.getByName("debug") {
+            storeFile = file(path)
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
