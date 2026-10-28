@@ -8,6 +8,8 @@ sealed interface ScreenCommand {
     data class Global(val action: ScreenGlobal) : ScreenCommand
     data class Click(val text: String) : ScreenCommand
     data class Scroll(val forward: Boolean) : ScreenCommand
+    /** «Что на экране», «прочитай экран», «о чём это сообщение» — question пусто или уточнение. */
+    data class Read(val question: String) : ScreenCommand
 }
 
 object ScreenParser {
@@ -27,9 +29,12 @@ object ScreenParser {
     private val click = rx("^(нажми|тыкни|кликни|жми)(\\s+на)?(\\s+кнопку)?\\s+(.+)$")
     private val scroll = rx("^(прокрути|листай|пролистай|промотай)(\\s+(вниз|дальше|вверх|наверх|назад))?$")
 
+    private val read = rx("^(что\\s+(у\\s+меня\\s+)?на\\s+экране|что\\s+тут\\s+(написано|на\\s+экране)|прочитай\\s+(экран|что\\s+на\\s+экране|с\\s+экрана)|посмотри\\s+на\\s+экран|объясни\\s+(что\\s+)?на\\s+экране|про\\s+экран)(?:[,:]?\\s+(.+))?$")
+
     fun parse(raw: String): ScreenCommand? {
         val s = raw.replace(wake, "").trim().trimEnd('.', '!', '?').replace('ё', 'е').trim()
         if (s.isEmpty()) return null
+        read.matchEntire(s)?.let { return ScreenCommand.Read(it.groupValues.last().trim()) }
         globals.firstOrNull { it.first.matches(s) }?.let { return ScreenCommand.Global(it.second) }
         click.matchEntire(s)?.let { m ->
             val t = m.groupValues[4].trim().trim('«', '»', '"')

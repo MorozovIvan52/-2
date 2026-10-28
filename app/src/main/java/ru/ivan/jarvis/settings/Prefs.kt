@@ -28,6 +28,8 @@ class Prefs(context: Context) {
     /** YandexGPT Pro вместо Lite: умнее, но дороже. */
     var aiPro: Boolean get() = bool("ai_pro", true); set(v) = setBool("ai_pro", v)
     /** ИИ отвечает на всё, что не поняли встроенные команды (а не только на вопросы). */
+    /** «О себе» — короткий текст, который ИИ учитывает в каждом ответе. */
+    var about: String get() = str("about", ""); set(v) = p.edit().putString("about", v.take(400)).apply()
     var aiFirst: Boolean get() = bool("ai_first", true); set(v) = setBool("ai_first", v)
     var dailyTokenLimit: Int get() = p.getInt("daily_limit", 20000); set(v) = p.edit().putInt("daily_limit", v).apply()
     val yandexReady: Boolean get() = apiKey.isNotBlank() && folderId.isNotBlank()

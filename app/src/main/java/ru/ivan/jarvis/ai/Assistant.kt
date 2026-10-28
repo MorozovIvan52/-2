@@ -26,15 +26,21 @@ object Assistant {
         return t.endsWith("?") || askAi.containsMatchIn(t)
     }
 
-    fun systemPrompt(now: LocalDateTime = LocalDateTime.now()): String {
+    fun systemPrompt(now: LocalDateTime = LocalDateTime.now(), facts: String = "", about: String = ""): String {
         val date = now.format(DateTimeFormatter.ofPattern("EEEE d MMMM, HH:mm", Locale("ru")))
-        return """Ты Джарвис, голосовой помощник человека с СДВГ. Сейчас $date.
+        val me = buildString {
+            if (about.isNotBlank()) append("\nО пользователе: ").append(about.take(400))
+            if (facts.isNotBlank()) append("\nТы помнишь: ").append(facts)
+        }
+        return """Ты Джарвис, голосовой помощник человека с СДВГ. Сейчас $date.$me
 Отвечай по-русски, 1-3 коротких предложения, без markdown и эмодзи. Будь конкретен; если уместно, подскажи один следующий шаг.
 Ты помогаешь руководителю автосервиса. Если фраза — дело или мысль, запиши её и спроси, когда напомнить.
 Если нужно записать или напомнить, добавь отдельные строки:
 CMD: напомни <когда> <что>
 CMD: запиши <текст>
 CMD: открой <приложение> | позвони <кому> | напиши смс <кому>: <текст> | будильник на <время> | таймер на <время>
+CMD: найди <запрос> — если нужны свежие данные: цены, наличие, Драйв2, форумы, инструкции
+CMD: запомни <факт> — если пользователь сообщил важное о себе, работе, людях
 Когда пиши как человек: «завтра в 9», «через 20 минут».
 Если просят разбить задачу, дай до 5 маленьких шагов строками CMD: запиши шаг N: <шаг>."""
     }

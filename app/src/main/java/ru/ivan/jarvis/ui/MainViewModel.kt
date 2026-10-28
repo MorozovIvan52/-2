@@ -102,6 +102,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var fromVoice = false
     val journal = ru.ivan.jarvis.data.Journal(app)
+    val memory = ru.ivan.jarvis.data.Memory(app)
     /** Фраза, на которую ещё не записан ответ в журнал. */
     private var lastSaid: String? = null
     private var pending: Pending? = null
@@ -234,6 +235,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             runScreen(cmd)
             return
         }
+        // 0д. Долгая память: «запомни, что…», «что ты обо мне знаешь», «забудь про…»
+        ru.ivan.jarvis.parse.MemoryParser.parse(text)?.let { cmd ->
+            when (cmd) {
+                is ru.ivan.jarvis.parse.MemoryCommand.Remember -> { memory.add(cmd.fact); answer("Запомнил: ${cmd.fact}") }
+                is ru.ivan.jarvis.parse.MemoryCommand.Forget -> answer(memory.forget(cmd.query)?.let { "Забыл: $it" } ?: "Такого не помню")
+                ru.ivan.jarvis.parse.MemoryCommand.Recall -> {
+                    val all = memory.all()
+                    answer(if (all.isEmpty()) "Пока ничего. Скажите «запомни, что…», и я буду это учитывать."
+                    else "Я помню: " + all.take(8).joinToString("; ") + if (all.size > 8) " и ещё ${all.size - 8}." else ".")
+                }
+            }
+            return
+        }
         // 1. Команды управления телефоном — бесплатно, на устройстве
         ActionParser.parse(text)?.let { action ->
             runAction(text, action, afterPermission)
@@ -345,10 +359,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             answer("Для этого включите Джарвиса в спецвозможностях: Настройки → раздел «Управление экраном».", quick = listOf("Что ты умеешь"))
             return
         }
+        if (cmd is ru.ivan.jarvis.parse.ScreenCommand.Read) {
+            // Телефоны и номера машин маскируем до отправки в облако
+            val screen = a11y.screenText()?.let { ru.ivan.jarvis.parse.Privacy.mask(it) }
+                ?: return answer("Не вижу текста на экране")
+            if (prefs.aiOn && prefs.yandexReady && ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) {
+                val q = cmd.question.ifBlank { "Кратко: что здесь главное и что мне с этим сделать?" }
+                viewModelScope.launch { askAi("Текст с экрана телефона:\n$screen\n\nВопрос: $q") }
+            } else {
+                answer("На экране: " + screen.replace('\n', ' ').take(400))
+            }
+            return
+        }
         val ok = when (cmd) {
             is ru.ivan.jarvis.parse.ScreenCommand.Global -> a11y.global(cmd.action)
             is ru.ivan.jarvis.parse.ScreenCommand.Click -> a11y.click(cmd.text)
             is ru.ivan.jarvis.parse.ScreenCommand.Scroll -> a11y.scroll(cmd.forward)
+            is ru.ivan.jarvis.parse.ScreenCommand.Read -> false
         }
         val fail = when (cmd) {
             is ru.ivan.jarvis.parse.ScreenCommand.Click -> "Не нашёл на экране «${cmd.text}»"
@@ -657,7 +684,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun askAi(text: String) {
         thinking = true
         feedback = Feedback("Думаю…")
-        val messages = mutableListOf("system" to Assistant.systemPrompt())
+        val messages = mutableListOf("system" to Assistant.systemPrompt(facts = memory.forPrompt(), about = prefs.about))
         lastExchange?.takeIf { System.currentTimeMillis() - it.third < 3 * 60_000 }?.let {
             messages += "user" to it.first.take(300)
             messages += "assistant" to it.second.take(300)
@@ -674,17 +701,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         lastExchange = Triple(text, raw, System.currentTimeMillis())
         val parsed = Assistant.parse(raw)
+        // Агент: ИИ сам решает, что сделать — поискать в интернете, запомнить, записать, открыть
+        val found = mutableListOf<String>()
+        val links = mutableListOf<Pair<String, String>>()
+        var saved = 0
+        var remembered = 0
         for (cmd in parsed.commands) {
-            // Команды телефона от ИИ выполняем как голосовые; остальное — заметки и напоминания
-            val action = ActionParser.parse(cmd)
-            if (action != null) runAction(cmd, action, afterPermission = false) else saveOrQuery(cmd, announce = false)
+            val lower = cmd.lowercase()
+            when {
+                lower.startsWith("найди") || lower.startsWith("поищи") || lower.startsWith("узнай") -> {
+                    feedback = Feedback("Ищу в интернете…")
+                    runCatching { web.ask(cmd) }.getOrNull()?.let { r ->
+                        found += r.text
+                        links += r.hits.take(3).map { it.domain to it.url }
+                    }
+                }
+                lower.startsWith("запомни") -> {
+                    memory.add(cmd.substringAfter(' ').removePrefix("что").trim(' ', ',', ':'))
+                    remembered++
+                }
+                else -> {
+                    // Команды телефона от ИИ выполняем как голосовые; остальное — заметки и напоминания
+                    val action = ActionParser.parse(cmd)
+                    if (action != null) runAction(cmd, action, afterPermission = false) else { saveOrQuery(cmd, announce = false); saved++ }
+                }
+            }
         }
-        val extra = when (parsed.commands.size) {
-            0 -> ""
-            1 -> " Записал."
-            else -> " Записал шагов: ${parsed.commands.size}."
+        val extra = buildString {
+            if (found.isNotEmpty()) append(" ").append(found.joinToString(" "))
+            if (remembered > 0) append(" Запомнил.")
+            when (saved) { 0 -> {}; 1 -> append(" Записал."); else -> append(" Записал шагов: $saved.") }
         }
-        answer((parsed.speech.ifBlank { "Готово." } + extra).trim(), followUp = parsed.commands.isEmpty(), source = "🧠 ${gpt.modelLabel}")
+        answer((parsed.speech.ifBlank { if (found.isEmpty()) "Готово." else "" } + extra).trim(), followUp = true,
+            links = links, source = "🧠 ${gpt.modelLabel}" + if (found.isNotEmpty()) " + 🌐 интернет" else "")
     }
 
     /** Для вопросов о планах — коротко передаём ИИ дела на сегодня (до 6 штук). */
@@ -899,7 +948,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "ставить таймер, включать фонарик, менять громкость, управлять музыкой, строить маршрут, искать в интернете. " +
             "Без рук: включите в настройках «Слушать всегда» и говорите «Джарвис, …». " +
             "Сообщения: «прочитай сообщения», «ответь Саше: буду через час». " +
-            "Экран (после включения в спецвозможностях): «назад», «на главный экран», «нажми Принять», «прокрути вниз», «сделай скриншот». " +
+            "Экран (после включения в спецвозможностях): «назад», «на главный экран», «нажми Принять», «прокрути вниз», «сделай скриншот», «что на экране». " +
+            "Память: «запомни, что мой поставщик — Автодок», «что ты обо мне знаешь», «забудь про Автодок». " +
             "Поручения: «поручи Саше поменять масло на Ларгусе», «жду ответа от поставщика», «разбери входящие», «срочно позвонить в банк». " +
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +

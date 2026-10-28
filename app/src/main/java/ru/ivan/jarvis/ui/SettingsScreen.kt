@@ -123,6 +123,21 @@ fun SettingsScreen(vm: MainViewModel) {
                 Text("Проверить ИИ")
             }
             test?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            var about by remember { mutableStateOf(prefs.about) }
+            OutlinedTextField(
+                value = about, onValueChange = { about = it.take(400); prefs.about = about },
+                label = { Text("О себе (ИИ учитывает в каждом ответе)") },
+                placeholder = { Text("Руковожу автосервисом в …, мастера: Саша (ходовая), … Отвечай коротко.") },
+                modifier = Modifier.fillMaxWidth(), minLines = 2,
+            )
+            var facts by remember { mutableStateOf(vm.memory.all()) }
+            Text("Память (говорите «запомни, что…»): ${facts.size}", style = MaterialTheme.typography.labelLarge)
+            facts.take(15).forEach { f ->
+                androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("• $f", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.TextButton(onClick = { vm.memory.remove(f); facts = vm.memory.all() }) { Text("✕") }
+                }
+            }
             OutlinedTextField(
                 value = limit,
                 onValueChange = { v -> limit = v.filter { it.isDigit() }; limit.toIntOrNull()?.let { prefs.dailyTokenLimit = it } },

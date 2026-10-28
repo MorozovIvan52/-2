@@ -97,6 +97,26 @@ class JarvisAccessibility : AccessibilityService() {
             return clickNode(node)
         }
 
+        /** Видимый текст текущего экрана (для «что на экране»). Никуда не сохраняется. */
+        fun screenText(maxChars: Int = 1500): String? {
+            val root = instance?.rootInActiveWindow ?: return null
+            val sb = StringBuilder()
+            val seen = HashSet<String>()
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var n = 0
+            while (queue.isNotEmpty() && n < 1500 && sb.length < maxChars) {
+                val node = queue.removeFirst()
+                n++
+                if (node.isVisibleToUser) {
+                    val t = (node.text ?: node.contentDescription)?.toString()?.trim().orEmpty()
+                    if (t.length > 1 && seen.add(t)) sb.append(t).append('\n')
+                }
+                for (i in 0 until node.childCount) node.getChild(i)?.let { queue.add(it) }
+            }
+            return sb.toString().take(maxChars).trim().ifBlank { null }
+        }
+
         fun scroll(forward: Boolean): Boolean {
             val root = instance?.rootInActiveWindow ?: return false
             val node = findFirst(root) { it.isScrollable } ?: return false
