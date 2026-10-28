@@ -112,7 +112,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshFocus()
         phone.serviceLookup = { name -> service.phoneFor(orders.value, name) }
         speaker.onDone = {
-            if (continueAfterSpeech) {
+            // Диалог продолжается, только пока экран Джарвиса на виду (не ушли в часы, Ватсап, карты)
+            if (continueAfterSpeech && ru.ivan.jarvis.JarvisApp.currentActivity is MainActivity) {
                 continueAfterSpeech = false
                 listenAgain++
             }
@@ -134,12 +135,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun answer(
         text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false,
         restore: Item? = null, quick: List<String> = emptyList(), links: List<Pair<String, String>> = emptyList(),
+        close: Boolean = false,
     ) {
+        val text = withHint(text, close)
         feedback = Feedback(text, itemId, restore, quick, links)
         lastSaid?.let { journal.add(it, text); lastSaid = null }
         val willSpeak = speakEnabled && speak
-        continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && (followUp || text.trimEnd().endsWith("?"))
+        // В режиме диалога после любого голосового ответа слушаем снова; тишина или «спасибо» — конец
+        continueAfterSpeech = willSpeak && fromVoice && prefs.dialog && !close
         if (willSpeak) speaker.say(text)
+    }
+
+    private var lastHintAt = 0L
+
+    /**
+     * Подсказка к ответу: просроченное дело или дело в ближайший час. Не чаще раза в 20 минут,
+     * не к вопросам (там ждём ответ) и не к прощанию.
+     */
+    private fun withHint(text: String, close: Boolean): String {
+        val now = System.currentTimeMillis()
+        if (close || pending != null || text.trimEnd().endsWith("?") || now - lastHintAt < 20 * 60_000) return text
+        val active = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null && !it.allDay }
+        val overdue = active.filter { it.repeat == ru.ivan.jarvis.data.Repeat.NONE && it.dueAt!! < now - 10 * 60_000 }
+            .sortedWith(compareByDescending<Item> { it.priority }.thenBy { it.dueAt })
+        val soon = active.filter { it.dueAt!! in now..(now + 60 * 60_000) }.minByOrNull { it.dueAt!! }
+        val hint = when {
+            overdue.isNotEmpty() -> "Кстати, не сделано: ${overdue.first().title}" + (if (overdue.size > 1) " и ещё ${overdue.size - 1}." else ".")
+            soon != null -> "Кстати, в ${timeOf(soon)}: ${soon.title}."
+            else -> return text
+        }
+        if (text.contains(hint.substringAfter(": ").trimEnd('.'))) return text
+        lastHintAt = now
+        return "${text.trimEnd()} $hint"
     }
 
     fun sayWhatNow() {
@@ -182,7 +209,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (STOP_DIALOG.matches(text.trim().lowercase())) {
             fromVoice = false
             pending = null
-            answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random())
+            answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random(), close = true)
             return
         }
         // 0а. Разбор входящих
@@ -261,7 +288,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             // 3. Вопросы и сложные просьбы — ИИ (если подключён)
-            if (prefs.aiOn && prefs.yandexReady && Assistant.shouldAsk(text) &&
+            // Недавно говорили с ИИ (3 мин) — продолжение разговора тоже идёт ему: «а если завтра?»
+            val talking = lastExchange?.let { System.currentTimeMillis() - it.third < 3 * 60_000 } == true &&
+                !NOTE_WORDS.containsMatchIn(text)
+            if (prefs.aiOn && prefs.yandexReady && (Assistant.shouldAsk(text) || talking) &&
                 (CommandParser.parse(text) as? Command.Save)?.due == null
             ) {
                 if (ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) { askAi(text); return@launch }

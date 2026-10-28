@@ -213,6 +213,26 @@ class PhoneController(private val context: Context) {
     }
 
 
+    /**
+     * Часы некоторых телефонов (Xiaomi и др.) или запрет запуска из фона молча не ставят будильник.
+     * Через 5 с проверяем «следующий будильник» системы; если нашего нет, а раньше него ничего не стоит —
+     * ставим свой будильник Джарвиса. Если у пользователя есть более ранний будильник, проверить нельзя — не трогаем.
+     */
+    private fun verifyAlarm(a: PhoneAction.Alarm, time: String) {
+        val hour = a.hour ?: return
+        val target = ru.ivan.jarvis.alarm.JarvisAlarm.Spec(0, hour, a.minute, null, a.days, a.label).nextAt() ?: return
+        val targetMs = target.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val am = context.getSystemService(android.app.AlarmManager::class.java)
+            val next = am?.nextAlarmClock?.triggerTime
+            val set = next != null && (kotlin.math.abs(next - targetMs) < 90_000 || next < targetMs - 90_000)
+            if (!set) {
+                ru.ivan.jarvis.alarm.JarvisAlarm.set(context, hour, a.minute, null, a.days, a.label)
+                android.widget.Toast.makeText(context, "Часы не приняли будильник — поставил будильник Джарвиса на $time", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }, 5000)
+    }
+
     private fun alarm(a: PhoneAction.Alarm): Result {
         if (a.hour == null) {
             return if (start(Intent(AlarmClock.ACTION_SHOW_ALARMS))) Result("Открываю будильники. Скажите время, например «будильник на 7».")
@@ -229,7 +249,10 @@ class PhoneController(private val context: Context) {
                 .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
             if (a.label.isNotBlank()) intent.putExtra(AlarmClock.EXTRA_MESSAGE, a.label)
             if (a.days.isNotEmpty()) intent.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, ArrayList(a.days.map { it.value % 7 + 1 }))
-            if (start(intent)) return Result("Будильник на $time$daysText поставлен в часах")
+            if (start(intent)) {
+                verifyAlarm(a, time)
+                return Result("Будильник на $time$daysText передал в часы")
+            }
         }
         val at = ru.ivan.jarvis.alarm.JarvisAlarm.set(context, a.hour, a.minute, a.date, a.days, a.label)
             ?: return Result("Это время уже прошло. Скажите другое.")

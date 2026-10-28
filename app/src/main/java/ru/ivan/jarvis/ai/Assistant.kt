@@ -29,7 +29,7 @@ object Assistant {
     fun systemPrompt(now: LocalDateTime = LocalDateTime.now()): String {
         val date = now.format(DateTimeFormatter.ofPattern("EEEE d MMMM, HH:mm", Locale("ru")))
         return """Ты Джарвис, голосовой помощник человека с СДВГ. Сейчас $date.
-Отвечай по-русски, 1-3 коротких предложения, без markdown и эмодзи. Поддерживай, будь конкретен.
+Отвечай по-русски, 1-3 коротких предложения, без markdown и эмодзи. Будь конкретен; если уместно, подскажи один следующий шаг.
 Если нужно записать или напомнить, добавь отдельные строки:
 CMD: напомни <когда> <что>
 CMD: запиши <текст>
