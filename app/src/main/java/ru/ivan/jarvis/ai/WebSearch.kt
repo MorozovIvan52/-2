@@ -20,7 +20,7 @@ import java.net.URLEncoder
 class WebSearch(context: Context, private val prefs: Prefs, private val gpt: YandexGpt) {
     private val cache = context.applicationContext.getSharedPreferences("jarvis_search", Context.MODE_PRIVATE)
 
-    data class Answer(val text: String, val hits: List<SearchHit>, val fromCache: Boolean = false)
+    data class Answer(val text: String, val hits: List<SearchHit>, val fromCache: Boolean = false, val byAi: Boolean = true)
 
     suspend fun ask(question: String): Answer? = withContext(Dispatchers.IO) {
         val plan = SearchParse.plan(question)
@@ -42,7 +42,7 @@ class WebSearch(context: Context, private val prefs: Prefs, private val gpt: Yan
         val user = "Вопрос: ${SearchParse.cleanQuery(question)}\nВыдержки:\n${SearchParse.digest(hits)}"
         val ai = if (prefs.aiOn && prefs.yandexReady) gpt.complete(listOf("system" to system, "user" to user), maxTokens = 200) else null
         val text = ai?.text ?: hits.first().let { "${it.snippet.take(220)} (${it.domain})" }
-        val answer = Answer(text, hits)
+        val answer = Answer(text, hits, byAi = ai?.text != null)
         if (ai?.text != null) store(key, answer)
         answer
     }

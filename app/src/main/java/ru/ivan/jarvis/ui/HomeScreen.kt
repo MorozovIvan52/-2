@@ -100,6 +100,10 @@ fun HomeScreen(
     onStartFocus: (Int) -> Unit = {},
     onStopFocus: () -> Unit = {},
     onRefreshFocus: () -> Unit = {},
+    /** null — ИИ подключён; иначе причина, почему нет. */
+    aiProblem: String? = null,
+    aiLabel: String = "",
+    onOpenSettings: () -> Unit = {},
 ) {
     val now = System.currentTimeMillis()
     val upcoming = items
@@ -128,6 +132,16 @@ fun HomeScreen(
                         if (speakEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         contentDescription = if (speakEnabled) "Выключить голосовые ответы" else "Включить голосовые ответы",
                     )
+                }
+            }
+        }
+        item {
+            // Сразу видно, работает ли ИИ
+            if (aiProblem == null) {
+                Text("🧠 ИИ подключён · $aiLabel", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            } else {
+                OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("⚠️ ИИ не работает: $aiProblem. Нажмите, чтобы подключить", color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -174,6 +188,12 @@ fun HomeScreen(
         }
         if (feedback != null) item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                Text(
+                    feedback.source.ifBlank { "⚙️ Встроенная команда" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 16.dp, top = 10.dp),
+                )
                 Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(feedback.text, Modifier.weight(1f).padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
                     if (feedback.itemId != null) TextButton(onClick = onUndo) { Text("Отменить") }

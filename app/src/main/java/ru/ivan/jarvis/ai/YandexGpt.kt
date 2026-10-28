@@ -8,9 +8,12 @@ import ru.ivan.jarvis.settings.Prefs
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Клиент YandexGPT Lite (Yandex Cloud Foundation Models, синхронный completion). */
+/** Клиент YandexGPT Pro/Lite (Yandex Cloud Foundation Models, синхронный completion). */
 class YandexGpt(private val prefs: Prefs) {
     data class Answer(val text: String?, val error: String? = null)
+
+    fun modelName() = if (prefs.aiPro) "yandexgpt" else "yandexgpt-lite"
+    val modelLabel: String get() = if (prefs.aiPro) "YandexGPT Pro" else "YandexGPT Lite"
 
     fun authHeader(key: String): String = if (key.startsWith("t1.")) "Bearer $key" else "Api-Key $key"
 
@@ -18,7 +21,7 @@ class YandexGpt(private val prefs: Prefs) {
         if (!prefs.yandexReady) return@withContext Answer(null, "Не задан ключ Yandex Cloud")
         if (prefs.tokensToday >= prefs.dailyTokenLimit) return@withContext Answer(null, "Дневной лимит ИИ исчерпан")
         val body = JSONObject()
-            .put("modelUri", "gpt://${prefs.folderId}/yandexgpt-lite/latest")
+            .put("modelUri", "gpt://${prefs.folderId}/${modelName()}/latest")
             .put(
                 "completionOptions",
                 JSONObject().put("stream", false).put("temperature", 0.3).put("maxTokens", maxTokens.toString()),

@@ -95,9 +95,9 @@ fun SettingsScreen(vm: MainViewModel) {
     ) {
         Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
 
-        Section("ИИ — YandexGPT Lite") {
+        Section("ИИ — YandexGPT") {
             Text(
-                "Включается только для вопросов и сложных просьб. Обычные команды работают бесплатно и без интернета.",
+                "Обычные команды (напоминания, звонки, будильник) работают без ИИ. ИИ отвечает на вопросы, ведёт разговор и разбирает непонятные фразы.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(onClick = { importFromClipboard() }, modifier = Modifier.fillMaxWidth()) {
@@ -114,6 +114,15 @@ fun SettingsScreen(vm: MainViewModel) {
                 label = { Text("ID каталога (b1g…)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
             SwitchRow("Использовать ИИ", aiOn) { aiOn = it; prefs.aiOn = it }
+            var pro by remember { mutableStateOf(prefs.aiPro) }
+            SwitchRow("Умная модель YandexGPT Pro (дороже Lite)", pro) { pro = it; prefs.aiPro = it }
+            var first by remember { mutableStateOf(prefs.aiFirst) }
+            SwitchRow("ИИ разбирает всё, что я сам не понял", first) { first = it; prefs.aiFirst = it }
+            var test by remember { mutableStateOf<String?>(null) }
+            OutlinedButton(onClick = { test = "Проверяю…"; vm.testAi { test = it } }, modifier = Modifier.fillMaxWidth()) {
+                Text("Проверить ИИ")
+            }
+            test?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             OutlinedTextField(
                 value = limit,
                 onValueChange = { v -> limit = v.filter { it.isDigit() }; limit.toIntOrNull()?.let { prefs.dailyTokenLimit = it } },

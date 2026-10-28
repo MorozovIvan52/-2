@@ -25,6 +25,10 @@ class Prefs(context: Context) {
     var apiKey: String get() = str("api_key", BuildConfig.YANDEX_API_KEY); set(v) = setStr("api_key", v.trim())
     var folderId: String get() = str("folder_id", BuildConfig.YANDEX_FOLDER_ID); set(v) = setStr("folder_id", v.trim())
     var aiOn: Boolean get() = bool("ai_on", true); set(v) = setBool("ai_on", v)
+    /** YandexGPT Pro вместо Lite: умнее, но дороже. */
+    var aiPro: Boolean get() = bool("ai_pro", true); set(v) = setBool("ai_pro", v)
+    /** ИИ отвечает на всё, что не поняли встроенные команды (а не только на вопросы). */
+    var aiFirst: Boolean get() = bool("ai_first", true); set(v) = setBool("ai_first", v)
     var dailyTokenLimit: Int get() = p.getInt("daily_limit", 20000); set(v) = p.edit().putInt("daily_limit", v).apply()
     val yandexReady: Boolean get() = apiKey.isNotBlank() && folderId.isNotBlank()
 

@@ -213,6 +213,9 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     onStartFocus = vm::startFocus,
                     onStopFocus = vm::stopFocus,
                     onRefreshFocus = vm::refreshFocus,
+                    aiProblem = vm.aiProblem(),
+                    aiLabel = vm.aiLabel,
+                    onOpenSettings = { tab = Tab.SETTINGS },
                 )
                 Tab.CALENDAR -> CalendarScreen(
                     items = items,

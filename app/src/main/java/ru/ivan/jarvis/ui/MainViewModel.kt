@@ -46,6 +46,8 @@ data class Feedback(
     val quick: List<String> = emptyList(),
     /** Источники ответа из интернета: (домен, ссылка). */
     val links: List<Pair<String, String>> = emptyList(),
+    /** Кто ответил: «ИИ …», «Интернет» или пусто — встроенные команды. */
+    val source: String = "",
 )
 
 /** Что Джарвис ждёт в следующей фразе. */
@@ -135,10 +137,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun answer(
         text: String, itemId: Long? = null, speak: Boolean = true, followUp: Boolean = false,
         restore: Item? = null, quick: List<String> = emptyList(), links: List<Pair<String, String>> = emptyList(),
-        close: Boolean = false,
+        close: Boolean = false, source: String = "",
     ) {
         val text = withHint(text, close)
-        feedback = Feedback(text, itemId, restore, quick, links)
+        feedback = Feedback(text, itemId, restore, quick, links, source)
         lastSaid?.let { journal.add(it, text); lastSaid = null }
         val willSpeak = speakEnabled && speak
         // В режиме диалога после любого голосового ответа слушаем снова; тишина или «спасибо» — конец
@@ -291,8 +293,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // Недавно говорили с ИИ (3 мин) — продолжение разговора тоже идёт ему: «а если завтра?»
             val talking = lastExchange?.let { System.currentTimeMillis() - it.third < 3 * 60_000 } == true &&
                 !NOTE_WORDS.containsMatchIn(text)
-            if (prefs.aiOn && prefs.yandexReady && (Assistant.shouldAsk(text) || talking) &&
-                (CommandParser.parse(text) as? Command.Save)?.due == null
+            // «ИИ на всё»: фраза без времени, не «запиши/напомни» и не вопрос о делах — пусть ИИ разберётся
+            val parsed = CommandParser.parse(text)
+            val unclear = prefs.aiFirst && parsed is Command.Save && parsed.due == null &&
+                !NOTE_WORDS.containsMatchIn(text) && !LOCAL_LEAD.containsMatchIn(text.trim())
+            if (prefs.aiOn && prefs.yandexReady && (Assistant.shouldAsk(text) || talking || unclear) &&
+                (parsed as? Command.Save)?.due == null
             ) {
                 if (ru.ivan.jarvis.actions.Net.online(getApplication<Application>())) { askAi(text); return@launch }
                 // Без интернета ИИ недоступен — сохраняем фразу как обычно, ничего не теряем
@@ -368,7 +374,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             answer("Не смог найти ответ сам, открыл поиск", speak = false)
             return
         }
-        answer(r.text, followUp = true, links = r.hits.take(3).map { it.domain to it.url })
+        answer(r.text, followUp = true, links = r.hits.take(3).map { it.domain to it.url },
+            source = if (r.byAi) "🌐 Интернет + ИИ" else "🌐 Интернет (без ИИ — вставьте ключ, будет пересказ)")
     }
 
     private fun askConfirm(sms: PhoneController.PendingSms, prefix: String? = null) {
@@ -677,19 +684,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             1 -> " Записал."
             else -> " Записал шагов: ${parsed.commands.size}."
         }
-        answer((parsed.speech.ifBlank { "Готово." } + extra).trim(), followUp = parsed.commands.isEmpty())
+        answer((parsed.speech.ifBlank { "Готово." } + extra).trim(), followUp = parsed.commands.isEmpty(), source = "🧠 ${gpt.modelLabel}")
     }
 
     /** Для вопросов о планах — коротко передаём ИИ дела на сегодня (до 6 штук). */
+    /**
+     * Короткая сводка для ИИ: дела на сегодня и машины в работе — чтобы советовал по делу.
+     * Имена и телефоны клиентов в облако не отправляем: только машина и статус.
+     */
     private fun todayContext(text: String): String {
-        if (!PLAN_WORDS.containsMatchIn(text)) return ""
         val today = LocalDate.now()
         val list = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.occursOn(today) }
-            .sortedBy { it.dueAt }.take(6)
-        if (list.isEmpty()) return "\n(На сегодня дел нет)"
-        return "\n(Мои дела сегодня: " + list.joinToString("; ") {
+            .sortedBy { it.dueAt }.take(if (PLAN_WORDS.containsMatchIn(text)) 6 else 3)
+        val cars = orders.value.filter { it.status != ru.ivan.jarvis.parse.OrderStatus.DONE }.take(4)
+            .joinToString("; ") { "${it.car.ifBlank { "машина" }} — ${it.status.label}" }
+        val tasks = if (list.isEmpty()) "дел нет" else list.joinToString("; ") {
             if (it.allDay) it.title else "${timeOf(it)} ${it.title}"
-        } + ")"
+        }
+        return "\n(Сегодня: $tasks" + (if (cars.isNotEmpty()) ". В сервисе: $cars" else "") + ")"
+    }
+
+    val aiLabel: String get() = gpt.modelLabel
+
+    /** Почему ИИ сейчас не ответит (null — всё в порядке). */
+    fun aiProblem(): String? = when {
+        !prefs.aiOn -> "выключен в настройках"
+        !prefs.yandexReady -> "не вставлен ключ Яндекса"
+        prefs.tokensToday >= prefs.dailyTokenLimit -> "исчерпан дневной лимит"
+        else -> null
+    }
+
+    /** Кнопка «Проверить ИИ» в настройках. */
+    fun testAi(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            if (!prefs.yandexReady) { onResult("❌ Не вставлены API-ключ и ID каталога"); return@launch }
+            val r = gpt.complete(listOf("user" to "Ответь одним словом: работаешь?"), maxTokens = 10)
+            onResult(if (r.text != null) "✅ ИИ работает (${gpt.modelLabel}): «${r.text}»" else "❌ ${r.error}")
+        }
     }
 
     private suspend fun applyEdit(e: TaskEdit) {
@@ -876,6 +907,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
+        private val LOCAL_LEAD = Regex("^(джарвис[, ]*)?(напомни|напоминай|запиши|запомни|добавь|сохрани)", RegexOption.IGNORE_CASE)
         private val PLAN_WORDS = Regex("(план|день|дня|задач|дела|успеть|приоритет|расписани)", RegexOption.IGNORE_CASE)
         private val YES = Regex("^(да|ага|угу|отправь|отправляй|давай|конечно|верно|подтверждаю|ок|окей|точно|yes)(?![\\p{L}])")
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
