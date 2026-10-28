@@ -10,7 +10,8 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ru.ivan.jarvis"
+        // Новый ID: ставится рядом со старыми сборками, у которых другая подпись, без конфликта
+        applicationId = "ru.ivan.jarvis.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 10

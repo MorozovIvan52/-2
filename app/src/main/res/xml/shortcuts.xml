@@ -8,6 +8,6 @@
         <intent
             android:action="ru.ivan.jarvis.LISTEN"
             android:targetClass="ru.ivan.jarvis.ui.MainActivity"
-            android:targetPackage="ru.ivan.jarvis" />
+            android:targetPackage="ru.ivan.jarvis.app" />
     </shortcut>
 </shortcuts>
