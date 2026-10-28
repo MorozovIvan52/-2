@@ -23,17 +23,23 @@ class WebSearch(context: Context, private val prefs: Prefs, private val gpt: Yan
     data class Answer(val text: String, val hits: List<SearchHit>, val fromCache: Boolean = false)
 
     suspend fun ask(question: String): Answer? = withContext(Dispatchers.IO) {
-        val query = SearchParse.cleanQuery(question).ifBlank { question }
+        val plan = SearchParse.plan(question)
+        val query = plan.query.ifBlank { question }
         val key = SearchParse.cacheKey(query)
         cached(key)?.let { return@withContext it }
 
         val hits = runCatching { yandex(query) }.getOrNull().orEmpty().ifEmpty { runCatching { ddg(query) }.getOrNull().orEmpty() }
         if (hits.isEmpty()) return@withContext null
 
-        val system = "Ты Джарвис. Ответь на вопрос по выдержкам из поиска: 1-3 коротких предложения, " +
-            "конкретные цифры, по-русски, без markdown. В конце в скобках домен источника. " +
-            "Если в выдержках ответа нет, скажи об этом и что лучше уточнить."
-        val user = "Вопрос: $query\nВыдержки:\n${SearchParse.digest(hits)}"
+        val task = when (plan.mode) {
+            SearchParse.Mode.FORUM -> "Перескажи, что пишут люди на форумах и Драйв2: частые причины, решения, советы. "
+            SearchParse.Mode.STOCK -> "Скажи, где есть в наличии и почём: магазин, цена, срок. Если наличия в выдержках нет — так и скажи. "
+            SearchParse.Mode.GENERAL -> "Ответь на вопрос. "
+        }
+        val system = "Ты Джарвис, помощник руководителя автосервиса. $task" +
+            "По выдержкам из поиска: 1-3 коротких предложения, конкретные цифры, по-русски, без markdown. " +
+            "В конце в скобках домен источника. Если ответа в выдержках нет, скажи об этом."
+        val user = "Вопрос: ${SearchParse.cleanQuery(question)}\nВыдержки:\n${SearchParse.digest(hits)}"
         val ai = if (prefs.aiOn && prefs.yandexReady) gpt.complete(listOf("system" to system, "user" to user), maxTokens = 200) else null
         val text = ai?.text ?: hits.first().let { "${it.snippet.take(220)} (${it.domain})" }
         val answer = Answer(text, hits)

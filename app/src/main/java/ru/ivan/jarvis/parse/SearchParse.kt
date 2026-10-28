@@ -19,12 +19,50 @@ object SearchParse {
         OPT,
     )
 
-    fun needsWeb(text: String): Boolean = webWords.containsMatchIn(text)
+    /** «Найди …», «узнай …», наличие, Драйв2, форумы, «как поменять …» — тоже в интернет. */
+    private val webLead = Regex(
+        "^(джарвис[\\s,.!]*)?(найди|поищи|загугли|погугли|узнай(?!\\s+у\\s)|посмотри\\s+в\\s+(интернете|сети|яндексе)|проверь\\s+наличи)",
+        OPT,
+    )
+    private val webTopics = Regex(
+        "(наличи|есть\\s+ли\\s+(в\\s+продаже|на\\s+складе)|драйв\\s*(2|два|ту)?|drive\\s*2|форум|что\\s+пишут|опыт\\s+владельц|" +
+            "болячк|слабые\\s+места|как\\s+(снять|поменять|заменить|разобрать|проверить|отрегулировать)|своими\\s+руками|" +
+            "распиновк|схем[аыу]\\s|где\\s+(стоит|расположен)|предохранител|реле\\s)",
+        OPT,
+    )
+
+    fun needsWeb(text: String): Boolean =
+        webWords.containsMatchIn(text) || webLead.containsMatchIn(text.trim()) || webTopics.containsMatchIn(text)
+
+    enum class Mode { GENERAL, FORUM, STOCK }
+
+    /** Что и как искать: запрос для поисковика и тип ответа. */
+    data class Plan(val query: String, val mode: Mode)
+
+    private val drive2 = Regex("\\s*(на|в|по)?\\s*(драйв\\p{L}*\\s*(2|два|ту)?|drive\\s*2(\\.ru)?)(?![\\p{L}\\d])", OPT)
+    private val forum = Regex("\\s*(на|в|по)?\\s*форум\\p{L}*|\\s*что\\s+пишут(\\s+люди)?(\\s+(про|о|об))?|\\s*опыт\\s+владельц\\p{L}*", OPT)
+    private val stock = Regex("\\s*(проверь\\s+)?(есть\\s+ли\\s+)?(в\\s+)?наличи\\p{L}*|\\s*есть\\s+ли\\s+(в\\s+продаже|на\\s+складе)", OPT)
+
+    fun plan(text: String): Plan {
+        var q = cleanQuery(text)
+        val isDrive = drive2.containsMatchIn(q)
+        val isForum = isDrive || forum.containsMatchIn(q) || Regex("(болячк|слабые\\s+места|опыт)", OPT).containsMatchIn(q)
+        val isStock = stock.containsMatchIn(q)
+        q = q.replace(drive2, " ").replace(forum, " ").replace(stock, " ")
+            .replace(Regex("^\\s*(про|о|об|на|что)\\s+", OPT), "")
+            .replace(Regex("\\s+"), " ").trim(' ', ',', '.')
+        return when {
+            isDrive -> Plan("$q site:drive2.ru", Mode.FORUM)
+            isForum -> Plan("$q форум отзывы", Mode.FORUM)
+            isStock -> Plan("$q купить в наличии цена", Mode.STOCK)
+            else -> Plan(q, Mode.GENERAL)
+        }
+    }
 
     /** Чистит вопрос для поисковика: убирает «джарвис», «найди», «в интернете». */
     fun cleanQuery(text: String): String = text.trim()
         .replace(Regex("^(джарвис|jarvis)[\\s,.!]*", OPT), "")
-        .replace(Regex("^(найди|поищи|загугли|погугли|посмотри|узнай|подскажи)\\s+(мне\\s+)?(в\\s+интернете\\s+|в\\s+яндексе\\s+|в\\s+гугле\\s+)?", OPT), "")
+        .replace(Regex("^(найди|поищи|загугли|погугли|посмотри|узнай|подскажи|проверь)\\s+(мне\\s+)?(в\\s+интернете\\s+|в\\s+сети\\s+|в\\s+яндексе\\s+|в\\s+гугле\\s+)?", OPT), "")
         .replace(Regex("\\s+в\\s+интернете$", OPT), "")
         .trim().trimEnd('?', '.', '!')
 
