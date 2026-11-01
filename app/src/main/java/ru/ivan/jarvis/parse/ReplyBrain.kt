@@ -47,6 +47,10 @@ object ReplyBrain {
 
     fun urgent(text: String) = urgentRx.containsMatchIn(text)
 
+    /** Готовить ли ответы: клиент из заказов, срочное или деловой вопрос (не «спасибо» и не болтовня). */
+    fun worthDrafting(a: Analysis, knownClient: Boolean): Boolean =
+        knownClient || a.urgent || a.intent !in setOf(Intent.OTHER, Intent.THANKS)
+
     /** Имя для обращения: «Саша (Иван)» → «Иван»; «Петров Иван» → «Иван». */
     fun firstName(sender: String): String {
         val inner = Regex("\\(([^)]+)\\)").find(sender)?.groupValues?.get(1) ?: sender

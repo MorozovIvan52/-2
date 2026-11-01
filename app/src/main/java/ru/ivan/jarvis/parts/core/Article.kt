@@ -114,6 +114,8 @@ object Article {
         best = best.dropWhile { it.none(Char::isDigit) && it.lowercase() in STOP }.dropLastWhile { it.none(Char::isDigit) && it.lowercase() in STOP }
         val article = normalize(best.joinToString(""))
         if (article.length < 3 || article.none { it.isDigit() } || article.length > 20) return null
+        // Только цифры — это скорее время, год или сумма («в 15:30», «Солярис 2017», «1500 руб»): нужен 6+ знаков
+        if (article.all { it.isDigit() } && article.length < 6) return null
         val part = partWords.findAll(phrase).map { it.value.lowercase() }.toList().let { found ->
             if (found.isEmpty()) "" else {
                 // «фильтр масляный»: деталь + следующее слово-прилагательное

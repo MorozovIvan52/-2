@@ -250,6 +250,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ru.ivan.jarvis.parts.core.PartsParser.parse(text)?.let { cmd ->
             when (cmd) {
                 is ru.ivan.jarvis.parts.core.PartsCommand.Price -> priceParts(cmd.q, cmd.refresh)
+                ru.ivan.jarvis.parts.core.PartsCommand.RefreshLast ->
+                    if (parts != null) refreshParts() else answer("Нечего обновлять. Скажите: «проценка Манн W 75/3».")
                 ru.ivan.jarvis.parts.core.PartsCommand.AskArticle ->
                     answer("Назовите артикул, например: «проценка Манн W 75/3».", followUp = true)
                 is ru.ivan.jarvis.parts.core.PartsCommand.Sores ->

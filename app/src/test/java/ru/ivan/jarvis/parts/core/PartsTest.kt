@@ -119,3 +119,27 @@ class PartsTest {
         assertFalse(r.offers.single().main)
     }
 }
+
+class PartsConflictsTest {
+    @Test fun notArticles() {
+        assertNull(PartsParser.parse("поменять масло в 15:30"))
+        assertNull(PartsParser.parse("колодки Солярис 2017"))
+        assertNull(PartsParser.parse("Цена от 1500 руб."))
+        assertEquals("0451103316", (PartsParser.parse("проценка 0451103316") as PartsCommand.Price).q.article)
+        assertNull(ru.ivan.jarvis.parse.AgentProtocol.goal("закажи фильтр салона"))
+        assertEquals("закажи такси до дома", ru.ivan.jarvis.parse.AgentProtocol.goal("закажи такси до дома")?.text)
+    }
+
+    @Test fun noisyReplies() {
+        val ok = ru.ivan.jarvis.parse.ReplyBrain.drafts("ок", "Друг", null)
+        assertFalse(ru.ivan.jarvis.parse.ReplyBrain.worthDrafting(ok, knownClient = false))
+        val q = ru.ivan.jarvis.parse.ReplyBrain.drafts("машина готова?", "Петров", null)
+        assertTrue(ru.ivan.jarvis.parse.ReplyBrain.worthDrafting(q, knownClient = false))
+    }
+}
+
+class PartsRefreshTest {
+    @Test fun refreshButton() {
+        assertEquals(PartsCommand.RefreshLast, PartsParser.parse("Обновить проценку"))
+    }
+}

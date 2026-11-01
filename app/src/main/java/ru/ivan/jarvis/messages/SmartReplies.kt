@@ -42,6 +42,8 @@ object SmartReplies {
         scope.launch {
             val order = findOrder(ctx, msg.sender)
             var a = ReplyBrain.drafts(msg.text, msg.sender, order)
+            // Не шумим: друзьям «ок» и «как дела» ответы не готовим — только клиентам из «Автосервиса» и деловым вопросам
+            if (!ReplyBrain.worthDrafting(a, order != null)) return@launch
             if (prefs.aiOn && prefs.yandexReady && ru.ivan.jarvis.actions.Net.online(ctx) && aiAllowed()) {
                 val r = YandexGpt(prefs).complete(
                     listOf(

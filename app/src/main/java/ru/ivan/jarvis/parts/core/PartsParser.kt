@@ -4,6 +4,8 @@ package ru.ivan.jarvis.parts.core
 sealed interface PartsCommand {
     /** «проценка W753», «где купить фильтр Манн W 75/3», «сколько стоит OC90». */
     data class Price(val q: PartQuery, val refresh: Boolean = false) : PartsCommand
+    /** «Обновить проценку» без артикула — обновить последнюю. */
+    data object RefreshLast : PartsCommand
     /** «проценка» без артикула — переспросить. */
     data object AskArticle : PartsCommand
     /** «найди болячку Солярис 2015» → форумы, Drive2, Drom. */
@@ -25,7 +27,7 @@ object PartsParser {
         if (s.isEmpty()) return null
         sores.find(s)?.let { return PartsCommand.Sores(it.groupValues.last().trim()) }
         refresh.find(s)?.let { m ->
-            val q = Article.parse(m.groupValues.last()) ?: return PartsCommand.AskArticle
+            val q = Article.parse(m.groupValues.last()) ?: return PartsCommand.RefreshLast
             return PartsCommand.Price(q, refresh = true)
         }
         price.find(s)?.let { m ->
