@@ -14,8 +14,10 @@ android {
         applicationId = "ru.ivan.jarvis.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "15.0"
+        versionCode = 19
+        versionName = "19.0"
+        // Только ARM (все современные телефоны): без x86-библиотек распознавания фото APK втрое меньше
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         // Ключи Яндекса по умолчанию: подставляются только при сборке приватного репозитория из секретов CI.
         // В коде их нет; без секретов поля пустые и ключ вводится в «Настройках».
         buildConfigField("String", "YANDEX_API_KEY", "\"${System.getenv("YANDEX_API_KEY").orEmpty()}\"")
