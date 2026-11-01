@@ -279,7 +279,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (STOP_DIALOG.matches(text.trim().lowercase())) {
             fromVoice = false
             pending = null
-            answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random(), close = true)
+            answer(listOf("Обращайтесь, шеф", "Хорошо, шеф, я рядом", "Удачи, шеф!").random(), close = true)
             return
         }
         // 0. СДВГ-коуч: шаги по одному, выгрузка из головы, «не могу начать», перенос несделанного
@@ -698,7 +698,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is Pending.Inbox -> return handleInbox(p, t, text)
             is Pending.AiActions -> {
                 if (yes) { viewModelScope.launch { runAiActions(p.cmds) }; return true }
-                if (no) { answer("Хорошо, ничего не делаю."); return true }
+                if (no) { answer("Понял, шеф, ничего не делаю."); return true }
                 return false
             }
             is Pending.AgentConfirm -> {
@@ -1503,7 +1503,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
             "«выгрузка: …» (всё из головы разложу по делам), «не могу начать» (правило 5 минут), «перенеси всё несделанное на завтра», «разгрузи день». " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
-            "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
+            "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем, шеф?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
         const val SAVE_NOTE = "Сохранить в заметку"
         private val SAVE_NOTE_RX = Regex("^(джарвис[, ]*)?(сохрани|запиши)\\s+(это|ответ|найденное)(\\s+в\\s+заметк\\p{L}*)?[.!]?$", RegexOption.IGNORE_CASE)
@@ -1519,6 +1519,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
         private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")
         private const val NO_STEPS = "Сейчас нет задачи по шагам. Скажите: «разбей <задача> на шаги»."
-        private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")
+        private val PRAISE = listOf("Отлично, шеф!", "Есть, шеф!", "Готово, шеф!", "Так держать, шеф!", "Сделано!")
     }
 }

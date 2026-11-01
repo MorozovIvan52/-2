@@ -232,7 +232,7 @@ fun SettingsScreen(vm: MainViewModel) {
                     onValueChangeFinished = { prefs.pitch = pitch; vm.speaker.applySettings() })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { vm.speaker.say("Добрый вечер. Я Джарвис, чем могу помочь?") }) { Text("Прослушать") }
+                OutlinedButton(onClick = { vm.speaker.say("Добрый день, шеф. Джарвис на связи, чем могу помочь?") }) { Text("Прослушать") }
                 if (!yandexVoiceOn) {
                     OutlinedButton(onClick = {
                         open(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.tts")))
