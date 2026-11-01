@@ -109,7 +109,21 @@ fun HomeScreen(
     parts: ru.ivan.jarvis.parts.core.PriceReport? = null,
     onRefreshParts: () -> Unit = {},
     onCloseParts: () -> Unit = {},
+    cameraTick: Int = 0,
+    onPhoto: (android.net.Uri) -> Unit = {},
 ) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var photoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val camera = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture()
+    ) { ok -> if (ok) photoUri?.let(onPhoto) }
+    fun shoot() {
+        val dir = java.io.File(ctx.cacheDir, "photos").apply { mkdirs() }
+        val u = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", java.io.File(dir, "label.jpg"))
+        photoUri = u
+        runCatching { camera.launch(u) }
+    }
+    androidx.compose.runtime.LaunchedEffect(cameraTick) { if (cameraTick > 0) shoot() }
     val now = System.currentTimeMillis()
     val upcoming = items
         .filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null }
@@ -187,6 +201,11 @@ fun HomeScreen(
         item { FocusCard(focus, onStartFocus, onStopFocus, onRefreshFocus, onAsk = onText) }
         if (steps != null && !steps.finished) item { StepCard(steps, onText) }
         if (parts != null) item { PartsCard(parts, onRefreshParts, onCloseParts) }
+        item {
+            OutlinedButton(onClick = { shoot() }, modifier = Modifier.fillMaxWidth()) {
+                Text("📷 Фото артикула или VIN → проценка")
+            }
+        }
         val inbox = items.count { it.type == ItemType.NOTE && !it.done }
         if (inbox > 0) item {
             OutlinedButton(onClick = { onText("разбери входящие") }, modifier = Modifier.fillMaxWidth()) {

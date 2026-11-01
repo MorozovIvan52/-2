@@ -53,6 +53,8 @@ class Prefs(context: Context) {
     var breakMinutes: Int get() = p.getInt("break_min", 5); set(v) = p.edit().putInt("break_min", v).apply()
     var focusPhase: String get() = str("focus_phase", ""); set(v) = setStr("focus_phase", v)
     var focusEndAt: Long get() = p.getLong("focus_end", 0); set(v) = p.edit().putLong("focus_end", v).apply()
+    /** Умные ответы на сообщения: 2 варианта в уведомлении, отправка одной кнопкой. */
+    var smartReplies: Boolean get() = bool("smart_replies", true); set(v) = setBool("smart_replies", v)
     /** Адрес поиска сайта проценки из настроек ({a} — артикул, {b} — бренд); пусто — встроенный. */
     fun partsUrl(site: String): String? = str("parts_url_$site", "").ifBlank { null }
     fun setPartsUrl(site: String, v: String) = setStr("parts_url_$site", v.trim())

@@ -220,6 +220,8 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     parts = vm.parts,
                     onRefreshParts = vm::refreshParts,
                     onCloseParts = vm::closeParts,
+                    cameraTick = vm.cameraTick,
+                    onPhoto = vm::onLabelPhoto,
                 )
                 Tab.CALENDAR -> CalendarScreen(
                     items = items,

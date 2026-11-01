@@ -65,6 +65,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     // Разбор HTML страниц проценки (устойчив к кривой вёрстке)
     implementation("org.jsoup:jsoup:1.18.1")
+    // Распознавание текста на фото этикетки/VIN — на телефоне, без интернета
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 

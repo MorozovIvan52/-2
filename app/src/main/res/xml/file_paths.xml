@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Фото этикетки для распознавания артикула/VIN: временно в кэше приложения -->
+<paths>
+    <cache-path name="photos" path="photos/" />
+</paths>

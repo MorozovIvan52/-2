@@ -117,6 +117,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val partsDao = (app as JarvisApp).db.parts()
     private val partsFetcher by lazy { ru.ivan.jarvis.parts.AndroidFetcher(app) }
     private var partsJob: kotlinx.coroutines.Job? = null
+    /** Растёт — главный экран открывает камеру (голосом: «сфоткай артикул»). */
+    var cameraTick by mutableStateOf(0)
+        private set
     /** Задача, которую проходим по одному шагу (null — нет). */
     var steps by mutableStateOf<StepPlan?>(null)
         private set
@@ -252,6 +255,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 is ru.ivan.jarvis.parts.core.PartsCommand.Sores ->
                     viewModelScope.launch { webAnswer("${cmd.model} болячки слабые места типичные неисправности drive2 drom форум") }
             }
+            return
+        }
+        if (PHOTO.containsMatchIn(text.trim())) {
+            cameraTick++
+            answer("Наведите камеру на этикетку или VIN и сделайте фото.", speak = fromVoice)
             return
         }
         if (SUMMARY.matches(text.trim())) {
@@ -1055,6 +1063,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Фото этикетки: ML Kit на телефоне → артикул (сразу проценка) или VIN (расшифровка, в заметки). */
+    fun onLabelPhoto(uri: android.net.Uri) {
+        viewModelScope.launch {
+            fromVoice = false
+            feedback = Feedback("📷 Читаю фото…")
+            val text = runCatching {
+                val img = com.google.mlkit.vision.common.InputImage.fromFilePath(appContext, uri)
+                val rec = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+                kotlinx.coroutines.suspendCancellableCoroutine<String> { c ->
+                    rec.process(img)
+                        .addOnSuccessListener { if (c.isActive) c.resumeWith(Result.success(it.text)) }
+                        .addOnFailureListener { if (c.isActive) c.resumeWith(Result.success("")) }
+                }
+            }.getOrDefault("")
+            when (val r = ru.ivan.jarvis.parts.core.LabelReader.read(text)) {
+                is ru.ivan.jarvis.parts.core.LabelReader.Result.Vin -> {
+                    val what = listOfNotNull(r.maker, r.year?.let { "$it г." }).joinToString(", ").ifBlank { "производитель не определён" }
+                    dao.insert(Item(type = ItemType.NOTE, title = "🚗 VIN ${r.vin} — $what", source = text.take(500)))
+                    answer("VIN ${r.vin}: $what. Записал в заметки.", source = "📷 Фото")
+                }
+                is ru.ivan.jarvis.parts.core.LabelReader.Result.Part -> {
+                    answer("На фото артикул ${r.q.article}" + (r.q.brand?.let { ", $it" } ?: "") + ". Делаю проценку.", source = "📷 Фото")
+                    priceParts(r.q, refresh = false)
+                }
+                ru.ivan.jarvis.parts.core.LabelReader.Result.Nothing ->
+                    answer(if (text.isBlank()) "Не разобрал текст. Снимите ближе и при хорошем свете." else "Не нашёл на фото ни артикула, ни VIN. Попробуйте ещё раз ближе.")
+            }
+        }
+    }
+
     /** Настройки → «Проверить источники»: каждый сайт по тестовому артикулу. */
     fun testPartsSources(article: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
@@ -1429,6 +1467,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок, «есть ли в наличии колодки на Солярис», «что пишут на Драйве про стук в подвеске Тигуана», «найди на форумах почему троит Логан». " +
+            "Фото: «сфоткай артикул» или кнопка 📷 — прочитаю артикул (и сразу проценка) или VIN (марка и год). " +
+            "Умные ответы: на сообщение клиента готовлю 2 варианта ответа с учётом его заказа — отправка одной кнопкой из уведомления. " +
             "Проценка запчастей: «проценка Манн W 75/3», «где купить колодки TRW GDB1330» — сначала ЗетЗап по Нижнему, потом Автотрейд, Росско, Парт-Ком, Иксора, Топдеталь; аналоги, если дешевле. «Найди болячку Солярис 2015». «Сводка» — итоги и что дальше. " +
             "Сам делаю в приложениях (нужны спецвозможности и ИИ): «открой Озон и найди масляный фильтр Mann», «в ютубе включи Высоцкого», «сделай сам: напиши Саше в телеграм, что задерживаюсь». Перед отправкой и оплатой спрошу «да». «Стоп» — остановлюсь. " +
             "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
@@ -1444,6 +1484,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
+        private val PHOTO = Regex("^(джарвис[, ]*)?(сфоткай|сфотографируй|фото|сними|распознай|прочитай|считай)\\s+(артикул|этикетк\\p{L}*|vin|вин|вин-код|номер\\s+детали|запчаст\\p{L}*)", RegexOption.IGNORE_CASE)
         private val SUMMARY = Regex("^(джарвис[, ]*)?(сводка|сводку|дай\\s+сводку|сводка\\s+дня)[.!]?$", RegexOption.IGNORE_CASE)
         private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
         private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")

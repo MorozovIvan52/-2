@@ -157,6 +157,10 @@ fun SettingsScreen(vm: MainViewModel) {
             ScreenControlBlock()
         }
         Section("Без рук и сообщения") {
+            var smart by remember { mutableStateOf(vm.prefs.smartReplies) }
+            SwitchRow("Умные ответы: на сообщение клиента готовлю 2 варианта, отправка одной кнопкой из уведомления", smart) {
+                smart = it; vm.prefs.smartReplies = it
+            }
             HandsFreeBlock(vm)
         }
 
