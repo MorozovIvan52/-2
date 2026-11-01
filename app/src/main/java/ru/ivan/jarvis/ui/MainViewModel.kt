@@ -65,6 +65,8 @@ private sealed interface Pending {
     data class ReplyConfirm(val msg: ru.ivan.jarvis.messages.InMessage, val text: String) : Pending
     /** Ждём поток мыслей для «выгрузки из головы». */
     data object Dump : Pending
+    /** ИИ предложил действия — выполняем только после «да». */
+    data class AiActions(val cmds: List<String>) : Pending
     /** Агент ждёт «да» перед необратимым нажатием (отправить, оплатить…). */
     data class AgentConfirm(val run: AgentRun, val label: String, val pkg: String?) : Pending
     /** Агент спросил что-то, без чего не может продолжить. */
@@ -694,6 +696,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is Pending.Inbox -> return handleInbox(p, t, text)
+            is Pending.AiActions -> {
+                if (yes) { viewModelScope.launch { runAiActions(p.cmds) }; return true }
+                if (no) { answer("Хорошо, ничего не делаю."); return true }
+                return false
+            }
             is Pending.AgentConfirm -> {
                 if (yes) { viewModelScope.launch { resumeAgent(p.run, p.pkg, confirmLabel = p.label) }; return true }
                 if (no) { answer("Хорошо, не нажимаю. Остановился."); return true }
@@ -817,23 +824,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         lastExchange = Triple(text, raw, System.currentTimeMillis())
         val parsed = Assistant.parse(raw)
-        // Агент: ИИ сам решает, что сделать — поискать в интернете, запомнить, записать, открыть
+        // Правило Ивана: «помогать только правильно, никакой самодеятельности».
+        // Сам ИИ только ищет в интернете (это ничего не меняет). Записать, напомнить, запомнить, позвонить,
+        // открыть, управлять телефоном — только после «да».
         val found = mutableListOf<String>()
         val links = mutableListOf<Pair<String, String>>()
-        var saved = 0
-        var remembered = 0
-        var breakdown: String? = null
-        var agentGoal: String? = null
+        val proposals = mutableListOf<String>()
+        val askedSteps = STEPS_ASK.containsMatchIn(text)
         for (cmd in parsed.commands) {
             val lower = cmd.lowercase()
             when {
-                lower.startsWith("сделай на телефоне") || lower.startsWith("агент") -> {
-                    agentGoal = cmd.substringAfter(if (lower.startsWith("агент")) "агент" else "телефоне").trim(' ', ':', ',')
-                }
-                lower.startsWith("разбей") || lower.startsWith("шаги") -> {
-                    breakdown = (CoachParser.parse(cmd) as? CoachCommand.Breakdown)?.task
-                        ?: cmd.substringAfter(' ', "").trim()
-                }
                 lower.startsWith("найди") || lower.startsWith("поищи") || lower.startsWith("узнай") -> {
                     feedback = Feedback("Ищу в интернете…")
                     runCatching { web.ask(cmd) }.getOrNull()?.let { r ->
@@ -841,27 +841,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         links += r.hits.take(3).map { it.domain to it.url }
                     }
                 }
+                (lower.startsWith("разбей") || lower.startsWith("шаги")) && askedSteps -> {
+                    // Человек сам попросил разбить задачу — показываем шаги по одному
+                    val task = (CoachParser.parse(cmd) as? CoachCommand.Breakdown)?.task ?: cmd.substringAfter(' ', "").trim()
+                    startBreakdown(task, intro = parsed.speech)
+                    return
+                }
+                else -> proposals += cmd.trim()
+            }
+        }
+        val speech = (parsed.speech.ifBlank { if (found.isEmpty() && proposals.isEmpty()) "Не уверен, что понял. Скажите иначе?" else "" } +
+            if (found.isNotEmpty()) " " + found.joinToString(" ") else "").trim()
+        val src = "🧠 ${gpt.modelLabel}" + if (found.isNotEmpty()) " + 🌐 интернет" else ""
+        if (proposals.isEmpty()) {
+            answer(speech, followUp = true, links = links, source = src)
+            return
+        }
+        val list = proposals.take(5)
+        pending = Pending.AiActions(list)
+        val ask = if (list.size == 1) "Сделать: ${list[0]}?" else "Сделать: " + list.mapIndexed { n, c -> "${n + 1}) $c" }.joinToString("; ") + "?"
+        answer("$speech $ask Скажите «да» или «нет».".trim(), followUp = true, links = links, source = src, quick = listOf("Да", "Нет"))
+    }
+
+    /** Выполнить действия, которые предложил ИИ, после «да». */
+    private suspend fun runAiActions(cmds: List<String>) {
+        val done = mutableListOf<String>()
+        for (cmd in cmds) {
+            val lower = cmd.lowercase()
+            when {
+                lower.startsWith("сделай на телефоне") || lower.startsWith("агент") -> {
+                    startAgent(cmd.substringAfter(if (lower.startsWith("агент")) "агент" else "телефоне").trim(' ', ':', ','))
+                    return
+                }
+                lower.startsWith("разбей") || lower.startsWith("шаги") -> {
+                    startBreakdown((CoachParser.parse(cmd) as? CoachCommand.Breakdown)?.task ?: cmd.substringAfter(' ', "").trim())
+                    return
+                }
                 lower.startsWith("запомни") -> {
                     memory.add(cmd.substringAfter(' ').removePrefix("что").trim(' ', ',', ':'))
-                    remembered++
+                    done += "запомнил"
                 }
                 else -> {
-                    // Команды телефона от ИИ выполняем как голосовые; остальное — заметки и напоминания
                     val action = ActionParser.parse(cmd)
-                    if (action != null) runAction(cmd, action, afterPermission = false) else { saveOrQuery(cmd, announce = false); saved++ }
+                    if (action != null) { runAction(cmd, action, afterPermission = false); return }
+                    done += saveOrQuery(cmd, announce = false)
                 }
             }
         }
-        // ИИ предложил разбить задачу — показываем шаги по одному
-        breakdown?.let { startBreakdown(it, intro = parsed.speech); return }
-        agentGoal?.takeIf { it.length > 2 }?.let { if (parsed.speech.isNotBlank()) feedback = Feedback(parsed.speech); startAgent(it); return }
-        val extra = buildString {
-            if (found.isNotEmpty()) append(" ").append(found.joinToString(" "))
-            if (remembered > 0) append(" Запомнил.")
-            when (saved) { 0 -> {}; 1 -> append(" Записал."); else -> append(" Записал шагов: $saved.") }
-        }
-        answer((parsed.speech.ifBlank { if (found.isEmpty()) "Готово." else "" } + extra).trim(), followUp = true,
-            links = links, source = "🧠 ${gpt.modelLabel}" + if (found.isNotEmpty()) " + 🌐 интернет" else "")
+        answer(done.joinToString(". ").ifBlank { "Готово" })
     }
 
     /** Для вопросов о планах — коротко передаём ИИ дела на сегодня (до 6 штук). */
@@ -1487,6 +1514,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
         private val PHOTO = Regex("^(джарвис[, ]*)?(сфоткай|сфотографируй|фото|сними|распознай|прочитай|считай)\\s+(артикул|этикетк\\p{L}*|vin|вин|вин-код|номер\\s+детали|запчаст\\p{L}*)", RegexOption.IGNORE_CASE)
+        private val STEPS_ASK = Regex("(разб|раздел|по\\s+шагам|шаг|с\\s+чего\\s+начать|как\\s+начать|план)", RegexOption.IGNORE_CASE)
         private val SUMMARY = Regex("^(джарвис[, ]*)?(сводка|сводку|дай\\s+сводку|сводка\\s+дня)[.!]?$", RegexOption.IGNORE_CASE)
         private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
         private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")
