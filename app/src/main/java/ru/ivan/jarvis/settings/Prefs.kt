@@ -53,6 +53,8 @@ class Prefs(context: Context) {
     var breakMinutes: Int get() = p.getInt("break_min", 5); set(v) = p.edit().putInt("break_min", v).apply()
     var focusPhase: String get() = str("focus_phase", ""); set(v) = setStr("focus_phase", v)
     var focusEndAt: Long get() = p.getLong("focus_end", 0); set(v) = p.edit().putLong("focus_end", v).apply()
+    /** Задача, которую проходим по шагам (StepPlan.encode), пусто — нет. */
+    var stepPlan: String get() = str("step_plan", ""); set(v) = setStr("step_plan", v)
 
     // Диалог, планы дня, прогресс
     var dialog: Boolean get() = bool("dialog", true); set(v) = setBool("dialog", v)

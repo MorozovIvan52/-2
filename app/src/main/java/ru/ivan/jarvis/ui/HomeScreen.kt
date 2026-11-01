@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -104,6 +105,7 @@ fun HomeScreen(
     aiProblem: String? = null,
     aiLabel: String = "",
     onOpenSettings: () -> Unit = {},
+    steps: ru.ivan.jarvis.parse.StepPlan? = null,
 ) {
     val now = System.currentTimeMillis()
     val upcoming = items
@@ -180,6 +182,7 @@ fun HomeScreen(
             )
         }
         item { FocusCard(focus, onStartFocus, onStopFocus, onRefreshFocus, onAsk = onText) }
+        if (steps != null && !steps.finished) item { StepCard(steps, onText) }
         val inbox = items.count { it.type == ItemType.NOTE && !it.done }
         if (inbox > 0) item {
             OutlinedButton(onClick = { onText("разбери входящие") }, modifier = Modifier.fillMaxWidth()) {
@@ -355,6 +358,32 @@ private fun FocusCard(
                 )
             }
             TextButton(onClick = onStop) { Text("Стоп") }
+        }
+    }
+}
+
+/** Задача по шагам: виден только текущий шаг — без перегруза. */
+@Composable
+private fun StepCard(plan: ru.ivan.jarvis.parse.StepPlan, onAsk: (String) -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text(
+                "📋 ${plan.task} · ${plan.progress}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                plan.current.orEmpty(),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { onAsk("сделал шаг") }, modifier = Modifier.weight(1f)) { Text("✓ Готово") }
+                OutlinedButton(onClick = { onAsk("не могу начать") }, modifier = Modifier.weight(1f)) { Text("5 минут") }
+                TextButton(onClick = { onAsk("все шаги") }) { Text("Все") }
+            }
         }
     }
 }

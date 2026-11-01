@@ -21,6 +21,10 @@ import ru.ivan.jarvis.data.toLocalDateTime
 import ru.ivan.jarvis.data.toMillis
 import ru.ivan.jarvis.focus.Focus
 import ru.ivan.jarvis.parse.ActionParser
+import ru.ivan.jarvis.parse.CoachCommand
+import ru.ivan.jarvis.parse.CoachParser
+import ru.ivan.jarvis.parse.StepPlan
+import ru.ivan.jarvis.parse.minutesLabel
 import ru.ivan.jarvis.parse.Command
 import ru.ivan.jarvis.parse.CommandParser
 import ru.ivan.jarvis.parse.PhoneAction
@@ -59,6 +63,8 @@ private sealed interface Pending {
     data class Inbox(val ids: List<Long>, val handled: Int) : Pending
     data class ReplyText(val msg: ru.ivan.jarvis.messages.InMessage) : Pending
     data class ReplyConfirm(val msg: ru.ivan.jarvis.messages.InMessage, val text: String) : Pending
+    /** Ждём поток мыслей для «выгрузки из головы». */
+    data object Dump : Pending
 }
 
 /** Запрос разрешений, после которого команду надо повторить. */
@@ -96,6 +102,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var focus by mutableStateOf(FocusState())
         private set
+    /** Задача, которую проходим по одному шагу (null — нет). */
+    var steps by mutableStateOf<StepPlan?>(null)
+        private set
     /** Растёт, когда после голосового ответа нужно снова слушать (режим диалога). */
     var listenAgain by mutableStateOf(0)
         private set
@@ -113,6 +122,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshFocus()
+        steps = StepPlan.decode(prefs.stepPlan)?.takeUnless { it.finished }
         phone.serviceLookup = { name -> service.phoneFor(orders.value, name) }
         speaker.onDone = {
             // Диалог продолжается, только пока экран Джарвиса на виду (не ушли в часы, Ватсап, карты)
@@ -217,6 +227,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             fromVoice = false
             pending = null
             answer(listOf("Обращайтесь", "Хорошо, я рядом", "Удачи!").random(), close = true)
+            return
+        }
+        // 0. СДВГ-коуч: шаги по одному, выгрузка из головы, «не могу начать», перенос несделанного
+        CoachParser.parse(text, stepsActive = steps != null)?.let { cmd ->
+            handleCoach(cmd)
             return
         }
         // 0а. Разбор входящих
@@ -628,6 +643,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is Pending.Inbox -> return handleInbox(p, t, text)
+            Pending.Dump -> {
+                if (no) { answer("Хорошо, в другой раз"); return true }
+                viewModelScope.launch { brainDump(text) }
+                return true
+            }
             is Pending.ReplyText -> {
                 if (no) { answer("Отменил"); return true }
                 askReply(p.msg, text.trim())
@@ -741,9 +761,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val links = mutableListOf<Pair<String, String>>()
         var saved = 0
         var remembered = 0
+        var breakdown: String? = null
         for (cmd in parsed.commands) {
             val lower = cmd.lowercase()
             when {
+                lower.startsWith("разбей") || lower.startsWith("шаги") -> {
+                    breakdown = (CoachParser.parse(cmd) as? CoachCommand.Breakdown)?.task
+                        ?: cmd.substringAfter(' ', "").trim()
+                }
                 lower.startsWith("найди") || lower.startsWith("поищи") || lower.startsWith("узнай") -> {
                     feedback = Feedback("Ищу в интернете…")
                     runCatching { web.ask(cmd) }.getOrNull()?.let { r ->
@@ -762,6 +787,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // ИИ предложил разбить задачу — показываем шаги по одному
+        breakdown?.let { startBreakdown(it, intro = parsed.speech); return }
         val extra = buildString {
             if (found.isNotEmpty()) append(" ").append(found.joinToString(" "))
             if (remembered > 0) append(" Запомнил.")
@@ -785,7 +812,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val tasks = if (list.isEmpty()) "дел нет" else list.joinToString("; ") {
             if (it.allDay) it.title else "${timeOf(it)} ${it.title}"
         }
-        return "\n(Сегодня: $tasks" + (if (cars.isNotEmpty()) ". В сервисе: $cars" else "") + ")"
+        val now = System.currentTimeMillis()
+        val overdue = items.value.count {
+            it.type == ItemType.REMINDER && !it.done && it.repeat == ru.ivan.jarvis.data.Repeat.NONE && !it.allDay && (it.dueAt ?: now) < now
+        }
+        val step = steps?.let { ". Идёт по шагам: «${it.task}», ${it.progress}: ${it.current}" } ?: ""
+        val late = if (overdue > 0) ". Просрочено дел: $overdue" else ""
+        return "\n(Сегодня: $tasks" + (if (cars.isNotEmpty()) ". В сервисе: $cars" else "") + late + step + ")"
     }
 
     val aiLabel: String get() = gpt.modelLabel
@@ -906,6 +939,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** «Что мне сейчас делать?» — одна главная задача, без перегруза. */
     private fun whatNow(): String {
+        steps?.let { p -> return "Вы на задаче «${p.task}», ${p.progress}: ${p.current}. Скажите «дальше», когда сделаете." }
         val now = System.currentTimeMillis()
         val today = LocalDate.now()
         val active = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null }
@@ -920,10 +954,184 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             else "Дел нет. Отдохните или скажите «фокус», чтобы поработать 25 минут."
         }
         val next = (overdue + todayLeft).distinct().drop(1).firstOrNull()
+        val left = (first.dueAt!! - now) / 60_000
         val head = if (first in overdue) "Сначала просроченное: ${first.title}." else "Сейчас главное: ${first.title}" +
-            (if (first.allDay) "." else ", в ${timeOf(first)}.")
+            (if (first.allDay) "." else ", в ${timeOf(first)} (через ${minutesLabel(left)}).")
         val tail = next?.let { " Потом: ${it.title}." } ?: ""
-        return "$head$tail Начните с первого маленького шага."
+        return "$head$tail Начните с первого маленького шага или скажите «разбей на шаги»."
+    }
+
+    // ---------- СДВГ-коуч ----------
+
+    private fun setSteps(p: StepPlan?) {
+        steps = p
+        prefs.stepPlan = p?.encode() ?: ""
+    }
+
+    /** Главное дело сейчас: просроченное важное или ближайшее на сегодня. */
+    private fun mainTask(): Item? {
+        val now = System.currentTimeMillis()
+        val today = LocalDate.now()
+        val active = items.value.filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null }
+        return active.filter { it.repeat == ru.ivan.jarvis.data.Repeat.NONE && it.dueAt!! < now && !it.allDay }
+            .sortedWith(compareByDescending<Item> { it.priority }.thenBy { it.dueAt }).firstOrNull()
+            ?: active.filter { it.occursOn(today) && (it.allDay || it.dueAt!! >= now) }
+                .sortedWith(compareByDescending<Item> { it.priority }.thenBy { it.dueAt }).firstOrNull()
+    }
+
+    private fun handleCoach(cmd: CoachCommand) {
+        when (cmd) {
+            is CoachCommand.Breakdown -> {
+                val task = cmd.task.ifBlank { steps?.current ?: mainTask()?.title.orEmpty() }
+                if (task.isBlank()) answer("Какую задачу разбить? Скажите, например: «разбей уборку гаража на шаги».", followUp = true)
+                else viewModelScope.launch { startBreakdown(task) }
+            }
+            CoachCommand.StepDone -> stepDone()
+            CoachCommand.StepWhere -> steps?.let { answer("Задача «${it.task}», ${it.progress}: ${it.current}.", quick = STEP_QUICK) }
+                ?: answer(NO_STEPS)
+            CoachCommand.StepsAll -> steps?.let { p ->
+                answer(p.steps.mapIndexed { i, st -> (if (i == p.index) "▶ " else if (i < p.index) "✓ " else "") + "${i + 1}. $st" }
+                    .joinToString("\n"), speak = false, quick = STEP_QUICK)
+            } ?: answer(NO_STEPS)
+            CoachCommand.StepsStop -> {
+                val p = steps
+                setSteps(null)
+                answer(if (p == null) NO_STEPS else "Хорошо, шаги убрал. Задача «${p.task}» осталась в заметках, вернёмся, когда будут силы.")
+            }
+            is CoachCommand.Dump -> if (cmd.text.isBlank()) {
+                pending = Pending.Dump
+                answer("Говорите всё подряд, что крутится в голове. Я разложу по делам и напоминаниям.", followUp = true)
+            } else viewModelScope.launch { brainDump(cmd.text) }
+            is CoachCommand.Unload -> viewModelScope.launch { unload(cmd.all) }
+            is CoachCommand.Stuck -> stuck(cmd.task)
+        }
+    }
+
+    /** Разбить задачу на крошечные шаги (ИИ или запасной шаблон) и показать первый. */
+    private suspend fun startBreakdown(task: String, intro: String = "") {
+        thinking = true
+        feedback = Feedback("Разбиваю на маленькие шаги…")
+        var list = emptyList<String>()
+        if (prefs.aiOn && prefs.yandexReady && ru.ivan.jarvis.actions.Net.online(appContext)) {
+            val r = gpt.complete(
+                listOf("system" to Assistant.breakdownPrompt(memory.forPrompt(300), prefs.about), "user" to task),
+                maxTokens = 350,
+            )
+            list = r.text?.let { CoachParser.parseSteps(it) }.orEmpty()
+        }
+        thinking = false
+        val fromAi = list.size >= 2
+        if (!fromAi) list = CoachParser.fallbackSteps(task)
+        val note = Item(
+            type = ItemType.NOTE, title = "📋 $task",
+            source = list.mapIndexed { i, st -> "${i + 1}. $st" }.joinToString("\n"),
+        )
+        val id = dao.insert(note)
+        setSteps(StepPlan(task, list, 0, id))
+        val head = intro.takeIf { it.isNotBlank() }?.let { "$it " } ?: ""
+        answer(
+            "${head}Разбил на ${list.size} ${stepsWord(list.size)}. Шаг 1: ${list[0]}. Скажите «дальше», когда сделаете.",
+            quick = STEP_QUICK, source = if (fromAi) "🧠 ${gpt.modelLabel}" else "",
+        )
+    }
+
+    private fun stepDone() {
+        val p = steps ?: return answer(NO_STEPS)
+        val n = p.next()
+        if (!n.finished) {
+            setSteps(n)
+            answer("${PRAISE.random()} ${n.progress.replaceFirstChar { it.uppercase() }}: ${n.current}.", quick = STEP_QUICK)
+            return
+        }
+        setSteps(null)
+        val count = prefs.markDone()
+        viewModelScope.launch { dao.get(p.noteId)?.let { dao.update(it.copy(done = true)) } }
+        answer("${PRAISE.random()} Все шаги пройдены, «${p.task}» сделано. Сегодня уже $count. Отдохните пару минут.")
+    }
+
+    /** Правило 5 минут: одно крошечное действие и таймер, бросить можно в любой момент. */
+    private fun stuck(task: String) {
+        val what = steps?.current ?: task.ifBlank { mainTask()?.title.orEmpty() }
+        Focus.start(appContext, 5)
+        refreshFocus()
+        answer(
+            if (what.isNotBlank()) "Это нормально, так бывает. Давайте только 5 минут: «$what». Таймер пошёл, потом можно бросить."
+            else "Это нормально, так бывает. Выберите самое лёгкое дело на 5 минут, таймер пошёл. Потом можно бросить.",
+            quick = listOf("Разбей на шаги", "Что делать?"),
+        )
+    }
+
+    /** Выгрузка из головы: поток мыслей → отдельные напоминания и заметки. */
+    private suspend fun brainDump(text: String) {
+        thinking = true
+        feedback = Feedback("Раскладываю по полочкам…")
+        var lines = emptyList<String>()
+        var fromAi = false
+        if (prefs.aiOn && prefs.yandexReady && ru.ivan.jarvis.actions.Net.online(appContext)) {
+            val r = gpt.complete(listOf("system" to Assistant.dumpPrompt(), "user" to text.take(2000)), maxTokens = 500)
+            lines = r.text.orEmpty().lines()
+                .map { it.trim().replace(Regex("^([-*•\\d.)\\s]+|CMD\\s*:\\s*)", RegexOption.IGNORE_CASE), "").trim() }
+                .filter { Regex("^(напомни|запиши)\\s", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+            fromAi = lines.isNotEmpty()
+        }
+        thinking = false
+        if (!fromAi) lines = CoachParser.splitDump(text)
+        var timed = 0
+        val titles = mutableListOf<String>()
+        for (line in lines) {
+            val c = CommandParser.parse(line) as? Command.Save ?: continue
+            saveOrQuery(line, announce = false)
+            if (c.due != null) timed++
+            titles += c.title
+        }
+        if (titles.isEmpty()) {
+            answer("Не разобрал отдельных дел. Попробуйте ещё раз: «выгрузка: купить масло, позвонить Пете завтра в 10…»")
+            return
+        }
+        val notes = titles.size - timed
+        val list = titles.take(5).joinToString("; ") + if (titles.size > 5) " и ещё ${titles.size - 5}" else ""
+        answer(
+            "Голова свободна! Записал ${titles.size}: $list. С временем — $timed" +
+                (if (notes > 0) ", во входящих — $notes. Разобрать их можно потом за 2 минуты." else "."),
+            quick = if (notes > 0) listOf("Разбери входящие", "Что делать?") else listOf("Что делать?"),
+            source = if (fromAi) "🧠 ${gpt.modelLabel}" else "",
+        )
+    }
+
+    /** Перенос несделанного на завтра без чувства вины. all — заодно разгрузить остаток сегодняшнего (кроме срочного). */
+    private suspend fun unload(all: Boolean) {
+        val now = System.currentTimeMillis()
+        val today = LocalDate.now()
+        val tomorrow = today.plusDays(1)
+        val open = dao.all().filter {
+            it.type == ItemType.REMINDER && !it.done && it.dueAt != null && it.repeat == ru.ivan.jarvis.data.Repeat.NONE
+        }
+        val overdue = open.filter { it.dueAt!! < now && (!it.allDay || it.dueAt.toLocalDateTime().toLocalDate() < today) }
+        val rest = if (all) open.filter { it.dueAt!! >= now && it.occursOn(today) && it.priority == 0 } else emptyList()
+        val move = (overdue + rest).distinctBy { it.id }
+        if (move.isEmpty()) {
+            answer("Переносить нечего, просроченных дел нет. " + whatNow())
+            return
+        }
+        for (item in move) {
+            val t = item.dueAt!!.toLocalDateTime().toLocalTime()
+            val at = if (item.allDay || t.hour < 9) java.time.LocalTime.of(9, 0) else t
+            val moved = item.copy(dueAt = tomorrow.atTime(at).toMillis())
+            ReminderScheduler.cancelSnooze(appContext, item.id)
+            NotificationManagerCompat.from(appContext).cancel(item.id.toInt())
+            dao.update(moved)
+            ReminderScheduler.schedule(appContext, moved)
+            syncCal(moved)
+        }
+        val left = dao.all().filter { it.type == ItemType.REMINDER && !it.done && it.dueAt != null && it.occursOn(today) && it.dueAt >= now }
+        val tail = left.maxByOrNull { it.priority }?.let { " Сегодня осталось главное: ${it.title}." } ?: " На сегодня всё, можно выдохнуть."
+        answer("Без проблем, так бывает. Перенёс на завтра: ${move.size} — ${move.take(3).joinToString("; ") { it.title }}." + tail)
+    }
+
+    private fun stepsWord(n: Int) = when {
+        n % 10 == 1 && n % 100 != 11 -> "шаг"
+        n % 10 in 2..4 && n % 100 !in 12..14 -> "шага"
+        else -> "шагов"
     }
 
     fun refreshFocus() {
@@ -989,6 +1197,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок, «есть ли в наличии колодки на Солярис», «что пишут на Драйве про стук в подвеске Тигуана», «найди на форумах почему троит Логан». " +
+            "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
+            "«выгрузка: …» (всё из головы разложу по делам), «не могу начать» (правило 5 минут), «перенеси всё несделанное на завтра», «разгрузи день». " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
             "С ключом Яндекса отвечаю на любые вопросы и разбиваю задачи на шаги. Что сделаем?"
         private val STOP_DIALOG = Regex("^(джарвис[, ]*)?(спасибо|всё|все|хватит|отбой|пока|ничего|не надо)[.!]?$")
@@ -1000,6 +1210,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
+        private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")
+        private const val NO_STEPS = "Сейчас нет задачи по шагам. Скажите: «разбей <задача> на шаги»."
         private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")
     }
 }
