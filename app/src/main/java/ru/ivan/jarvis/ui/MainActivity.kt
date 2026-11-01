@@ -217,6 +217,9 @@ private fun JarvisRoot(vm: MainViewModel, listenRequests: Int) {
                     aiLabel = vm.aiLabel,
                     onOpenSettings = { tab = Tab.SETTINGS },
                     steps = vm.steps,
+                    parts = vm.parts,
+                    onRefreshParts = vm::refreshParts,
+                    onCloseParts = vm::closeParts,
                 )
                 Tab.CALENDAR -> CalendarScreen(
                     items = items,

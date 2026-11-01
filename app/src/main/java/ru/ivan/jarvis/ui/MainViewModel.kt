@@ -111,6 +111,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var focus by mutableStateOf(FocusState())
         private set
+    /** Последняя проценка запчастей — сводная таблица на главном. */
+    var parts by mutableStateOf<ru.ivan.jarvis.parts.core.PriceReport?>(null)
+        private set
+    private val partsDao = (app as JarvisApp).db.parts()
+    private val partsFetcher by lazy { ru.ivan.jarvis.parts.AndroidFetcher(app) }
+    private var partsJob: kotlinx.coroutines.Job? = null
     /** Задача, которую проходим по одному шагу (null — нет). */
     var steps by mutableStateOf<StepPlan?>(null)
         private set
@@ -235,6 +241,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (agentJob?.isActive == true && AGENT_STOP.containsMatchIn(text.trim())) {
             agentJob?.cancel()
             answer("Остановил выполнение.")
+            return
+        }
+        // 0. Проценка запчастей: «проценка Манн W753», «где купить колодки TRW GDB1330», «найди болячку Солярис»
+        ru.ivan.jarvis.parts.core.PartsParser.parse(text)?.let { cmd ->
+            when (cmd) {
+                is ru.ivan.jarvis.parts.core.PartsCommand.Price -> priceParts(cmd.q, cmd.refresh)
+                ru.ivan.jarvis.parts.core.PartsCommand.AskArticle ->
+                    answer("Назовите артикул, например: «проценка Манн W 75/3».", followUp = true)
+                is ru.ivan.jarvis.parts.core.PartsCommand.Sores ->
+                    viewModelScope.launch { webAnswer("${cmd.model} болячки слабые места типичные неисправности drive2 drom форум") }
+            }
+            return
+        }
+        if (SUMMARY.matches(text.trim())) {
+            viewModelScope.launch { answer(summary(dao.all()) + " " + whatNow(), followUp = true) }
             return
         }
         // 0. Супер-Джарвис: многошаговое дело в приложениях — «открой Озон и найди фильтр Mann»
@@ -996,6 +1017,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return "$head$tail Начните с первого маленького шага или скажите «разбей на шаги»."
     }
 
+    // ---------- Проценка запчастей ----------
+
+    private fun partsProviders() = ru.ivan.jarvis.parts.core.Sites.all(partsFetcher) { prefs.partsUrl(it) }
+
+    /** Кнопка «Обновить проценку». */
+    fun refreshParts() { parts?.let { priceParts(it.query, refresh = true) } }
+    fun closeParts() { parts = null }
+
+    private fun priceParts(q: ru.ivan.jarvis.parts.core.PartQuery, refresh: Boolean) {
+        partsJob?.cancel()
+        partsJob = viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            if (!refresh) {
+                val cached = partsDao.get(q.key)?.takeIf { now - it.createdAt < ru.ivan.jarvis.parts.PartsJson.TTL_MS }
+                    ?.let { ru.ivan.jarvis.parts.PartsJson.decode(it.json, it.createdAt) }
+                if (cached != null) {
+                    parts = cached
+                    val t = java.time.Instant.ofEpochMilli(cached.at).atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+                    answer(ru.ivan.jarvis.parts.core.Pricing.speech(cached) + " Данные от %d:%02d, обновить?".format(t.hour, t.minute),
+                        quick = listOf("Обновить проценку"), source = "💾 Проценка из памяти")
+                    return@launch
+                }
+            }
+            if (!ru.ivan.jarvis.actions.Net.online(appContext)) { answer("Нет интернета, проценить не получится."); return@launch }
+            thinking = true
+            feedback = Feedback("🔎 Проценка ${q.spoken}: смотрю ЗетЗап…")
+            val report = ru.ivan.jarvis.parts.core.Pricing.run(q, partsProviders(),
+                onDebug = { ru.ivan.jarvis.parts.PartsDebug.save(appContext, it) })
+            thinking = false
+            parts = report
+            if (report.offers.isNotEmpty()) {
+                partsDao.put(ru.ivan.jarvis.parts.PartsEntry(q.key, ru.ivan.jarvis.parts.PartsJson.encode(report), report.at))
+                partsDao.purge(now - 24 * 3600_000L)
+            }
+            answer(ru.ivan.jarvis.parts.core.Pricing.speech(report), source = "🔎 Проценка: " + report.status.joinToString(", ") { it.first })
+        }
+    }
+
+    /** Настройки → «Проверить источники»: каждый сайт по тестовому артикулу. */
+    fun testPartsSources(article: String, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val q = ru.ivan.jarvis.parts.core.Article.parse(article) ?: ru.ivan.jarvis.parts.core.PartQuery(article, null, "")
+            val lines = mutableListOf<String>()
+            onResult("Проверяю ${q.article}…")
+            for (p in partsProviders()) {
+                val r = kotlinx.coroutines.withTimeoutOrNull(ru.ivan.jarvis.parts.core.Pricing.SITE_TIMEOUT_MS) { p.search(q.article, q.brand) }
+                lines += p.title + ": " + when (r) {
+                    is ru.ivan.jarvis.parts.core.ProviderResult.Ok -> "✅ ${r.offers.size} предл., от ${r.offers.minOf { it.price }} ₽"
+                    is ru.ivan.jarvis.parts.core.ProviderResult.Empty -> { ru.ivan.jarvis.parts.PartsDebug.save(appContext, r); "⚠️ открылся, но не разобрал (отладка сохранена)" }
+                    is ru.ivan.jarvis.parts.core.ProviderResult.Unavailable -> "❌ недоступен: ${r.reason}"
+                    null -> "❌ не ответил вовремя"
+                }
+                onResult(lines.joinToString("\n"))
+            }
+        }
+    }
+
     // ---------- Супер-Джарвис: агент на экране ----------
 
     private var agentJob: kotlinx.coroutines.Job? = null
@@ -1351,6 +1429,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок, «есть ли в наличии колодки на Солярис», «что пишут на Драйве про стук в подвеске Тигуана», «найди на форумах почему троит Логан». " +
+            "Проценка запчастей: «проценка Манн W 75/3», «где купить колодки TRW GDB1330» — сначала ЗетЗап по Нижнему, потом Автотрейд, Росско, Парт-Ком, Иксора, Топдеталь; аналоги, если дешевле. «Найди болячку Солярис 2015». «Сводка» — итоги и что дальше. " +
             "Сам делаю в приложениях (нужны спецвозможности и ИИ): «открой Озон и найди масляный фильтр Mann», «в ютубе включи Высоцкого», «сделай сам: напиши Саше в телеграм, что задерживаюсь». Перед отправкой и оплатой спрошу «да». «Стоп» — остановлюсь. " +
             "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
             "«выгрузка: …» (всё из головы разложу по делам), «не могу начать» (правило 5 минут), «перенеси всё несделанное на завтра», «разгрузи день». " +
@@ -1365,6 +1444,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
+        private val SUMMARY = Regex("^(джарвис[, ]*)?(сводка|сводку|дай\\s+сводку|сводка\\s+дня)[.!]?$", RegexOption.IGNORE_CASE)
         private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
         private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")
         private const val NO_STEPS = "Сейчас нет задачи по шагам. Скажите: «разбей <задача> на шаги»."

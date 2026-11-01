@@ -106,6 +106,9 @@ fun HomeScreen(
     aiLabel: String = "",
     onOpenSettings: () -> Unit = {},
     steps: ru.ivan.jarvis.parse.StepPlan? = null,
+    parts: ru.ivan.jarvis.parts.core.PriceReport? = null,
+    onRefreshParts: () -> Unit = {},
+    onCloseParts: () -> Unit = {},
 ) {
     val now = System.currentTimeMillis()
     val upcoming = items
@@ -183,6 +186,7 @@ fun HomeScreen(
         }
         item { FocusCard(focus, onStartFocus, onStopFocus, onRefreshFocus, onAsk = onText) }
         if (steps != null && !steps.finished) item { StepCard(steps, onText) }
+        if (parts != null) item { PartsCard(parts, onRefreshParts, onCloseParts) }
         val inbox = items.count { it.type == ItemType.NOTE && !it.done }
         if (inbox > 0) item {
             OutlinedButton(onClick = { onText("разбери входящие") }, modifier = Modifier.fillMaxWidth()) {
@@ -384,6 +388,64 @@ private fun StepCard(plan: ru.ivan.jarvis.parse.StepPlan, onAsk: (String) -> Uni
                 OutlinedButton(onClick = { onAsk("не могу начать") }, modifier = Modifier.weight(1f)) { Text("5 минут") }
                 TextButton(onClick = { onAsk("все шаги") }) { Text("Все") }
             }
+        }
+    }
+}
+
+/** Сводная таблица проценки: цена / наличие / срок / сайт / поставщик, отдельно аналоги. */
+@Composable
+private fun PartsCard(r: ru.ivan.jarvis.parts.core.PriceReport, onRefresh: () -> Unit, onClose: () -> Unit) {
+    val uri = androidx.compose.ui.platform.LocalUriHandler.current
+    val t = r.table
+    val time = java.time.Instant.ofEpochMilli(r.at).atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+    Card {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🔎 ${r.query.spoken}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onClose) { Text("✕") }
+            }
+            Text(
+                "Данные от %d:%02d".format(time.hour, time.minute) + if (r.fromCache) " (из памяти)" else "",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.height(6.dp))
+            PartsHeader()
+            if (t.originals.isEmpty()) Text("Оригинал не найден", style = MaterialTheme.typography.bodySmall)
+            t.originals.forEach { o -> PartsRow(o) { uri.openUri(o.url) } }
+            if (t.analogs.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text("Аналоги дешевле оригинала", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                t.analogs.forEach { o -> PartsRow(o, showArticle = true) { uri.openUri(o.url) } }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(r.status.joinToString(" · ") { "${it.first}: ${it.second}" }, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("Обновить проценку") }
+        }
+    }
+}
+
+@Composable
+private fun PartsHeader() {
+    Row(Modifier.fillMaxWidth()) {
+        listOf("Цена" to 1.1f, "Наличие" to 1f, "Срок" to 0.8f, "Сайт" to 1.2f, "Поставщик" to 1.4f).forEach { (h, w) ->
+            Text(h, Modifier.weight(w), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun PartsRow(o: ru.ivan.jarvis.parts.core.Offer, showArticle: Boolean = false, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 4.dp)) {
+        if (showArticle) Text("${o.brand} ${o.article}", style = MaterialTheme.typography.labelSmall)
+        Row(Modifier.fillMaxWidth()) {
+            val st = MaterialTheme.typography.bodySmall
+            Text("${o.price} ₽", Modifier.weight(1.1f), style = st, fontWeight = FontWeight.SemiBold)
+            Text(o.stock.ifBlank { "—" }, Modifier.weight(1f), style = st)
+            Text(o.days?.let { if (it == 0) "сегодня" else "$it дн." } ?: "—", Modifier.weight(0.8f), style = st)
+            Text(if (o.main) "зет зап" else o.site, Modifier.weight(1.2f), style = st,
+                color = if (o.main) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            Text(o.supplier, Modifier.weight(1.4f), style = st, maxLines = 2)
         }
     }
 }
