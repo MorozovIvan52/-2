@@ -65,6 +65,15 @@ private sealed interface Pending {
     data class ReplyConfirm(val msg: ru.ivan.jarvis.messages.InMessage, val text: String) : Pending
     /** Ждём поток мыслей для «выгрузки из головы». */
     data object Dump : Pending
+    /** Агент ждёт «да» перед необратимым нажатием (отправить, оплатить…). */
+    data class AgentConfirm(val run: AgentRun, val label: String, val pkg: String?) : Pending
+    /** Агент спросил что-то, без чего не может продолжить. */
+    data class AgentAnswer(val run: AgentRun, val pkg: String?) : Pending
+}
+
+/** Выполнение дела агентом: цель и что уже сделано. */
+data class AgentRun(val goal: String, val history: List<String> = emptyList(), val step: Int = 0) {
+    fun add(h: String) = copy(history = history + h, step = step + 1)
 }
 
 /** Запрос разрешений, после которого команду надо повторить. */
@@ -222,6 +231,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pending?.let { p ->
             pending = null
             if (handlePending(p, text)) return
+        }
+        if (agentJob?.isActive == true && AGENT_STOP.containsMatchIn(text.trim())) {
+            agentJob?.cancel()
+            answer("Остановил выполнение.")
+            return
+        }
+        // 0. Супер-Джарвис: многошаговое дело в приложениях — «открой Озон и найди фильтр Mann»
+        ru.ivan.jarvis.parse.AgentProtocol.goal(text)?.let { g ->
+            val app = g.app
+            val known = app == null || listOf(app, app.dropLast(1), app.dropLast(2)).filter { it.length >= 2 }.any { phone.hasApp(it) }
+            if (known) { startAgent(g.text); return }
         }
         if (STOP_DIALOG.matches(text.trim().lowercase())) {
             fromVoice = false
@@ -643,6 +663,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is Pending.Inbox -> return handleInbox(p, t, text)
+            is Pending.AgentConfirm -> {
+                if (yes) { viewModelScope.launch { resumeAgent(p.run, p.pkg, confirmLabel = p.label) }; return true }
+                if (no) { answer("Хорошо, не нажимаю. Остановился."); return true }
+                return false
+            }
+            is Pending.AgentAnswer -> {
+                if (no) { answer("Хорошо, остановился."); return true }
+                viewModelScope.launch { resumeAgent(p.run.add("пользователь ответил: ${text.trim()}"), p.pkg) }
+                return true
+            }
             Pending.Dump -> {
                 if (no) { answer("Хорошо, в другой раз"); return true }
                 viewModelScope.launch { brainDump(text) }
@@ -762,9 +792,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var saved = 0
         var remembered = 0
         var breakdown: String? = null
+        var agentGoal: String? = null
         for (cmd in parsed.commands) {
             val lower = cmd.lowercase()
             when {
+                lower.startsWith("сделай на телефоне") || lower.startsWith("агент") -> {
+                    agentGoal = cmd.substringAfter(if (lower.startsWith("агент")) "агент" else "телефоне").trim(' ', ':', ',')
+                }
                 lower.startsWith("разбей") || lower.startsWith("шаги") -> {
                     breakdown = (CoachParser.parse(cmd) as? CoachCommand.Breakdown)?.task
                         ?: cmd.substringAfter(' ', "").trim()
@@ -789,6 +823,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // ИИ предложил разбить задачу — показываем шаги по одному
         breakdown?.let { startBreakdown(it, intro = parsed.speech); return }
+        agentGoal?.takeIf { it.length > 2 }?.let { if (parsed.speech.isNotBlank()) feedback = Feedback(parsed.speech); startAgent(it); return }
         val extra = buildString {
             if (found.isNotEmpty()) append(" ").append(found.joinToString(" "))
             if (remembered > 0) append(" Запомнил.")
@@ -960,6 +995,125 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val tail = next?.let { " Потом: ${it.title}." } ?: ""
         return "$head$tail Начните с первого маленького шага или скажите «разбей на шаги»."
     }
+
+    // ---------- Супер-Джарвис: агент на экране ----------
+
+    private var agentJob: kotlinx.coroutines.Job? = null
+
+    private fun startAgent(goal: String) {
+        val a11y = ru.ivan.jarvis.actions.JarvisAccessibility
+        if (!a11y.running()) {
+            answer(
+                "Чтобы я сам нажимал в приложениях, включите Джарвиса в спецвозможностях: Настройки → «Управление экраном». Это один раз.",
+                quick = listOf("Что ты умеешь"),
+            )
+            return
+        }
+        if (!(prefs.aiOn && prefs.yandexReady)) { answer("Для этого нужен ИИ: вставьте ключ Яндекса в Настройках."); return }
+        if (!ru.ivan.jarvis.actions.Net.online(appContext)) { answer("Нет интернета, а без него ИИ не видит экран."); return }
+        agentJob?.cancel()
+        agentJob = viewModelScope.launch { resumeAgent(AgentRun(goal), null) }
+    }
+
+    /**
+     * Цикл агента: снимок экрана → ИИ выбирает одно действие → выполняем → ждём → снова.
+     * pkg — приложение, куда вернуться после вопроса пользователю. confirmLabel — пользователь
+     * сказал «да» на нажатие этого элемента.
+     */
+    private suspend fun resumeAgent(start: AgentRun, pkg: String?, confirmLabel: String? = null) {
+        val a11y = ru.ivan.jarvis.actions.JarvisAccessibility
+        val proto = ru.ivan.jarvis.parse.AgentProtocol
+        var st = start
+        val myPkg = appContext.packageName
+        // Возвращаемся в приложение, где остановились
+        if (pkg != null && pkg != myPkg) {
+            appContext.packageManager.getLaunchIntentForPackage(pkg)?.let {
+                runCatching { appContext.startActivity(it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+            kotlinx.coroutines.delay(1800)
+        }
+        if (confirmLabel != null) {
+            val els = a11y.snapshot().orEmpty()
+            val target = els.firstOrNull { it.label == confirmLabel } ?: els.firstOrNull { it.label.contains(confirmLabel.take(20), true) }
+            val ok = target != null && a11y.tapIndex(target.index)
+            st = st.add(if (ok) "нажал «$confirmLabel» (подтверждено)" else "не нашёл «$confirmLabel»")
+            kotlinx.coroutines.delay(1500)
+        }
+        var lastSig = ""
+        var repeats = 0
+        while (st.step < proto.MAX_STEPS) {
+            var els = a11y.snapshot() ?: return answer("Служба спецвозможностей не отвечает. Выключите и включите её снова.")
+            // Свой экран ИИ не показываем: первым делом он откроет нужное приложение
+            val cur = a11y.currentPackage().orEmpty()
+            if (cur == myPkg) els = emptyList()
+            val app = if (cur == myPkg) "Джарвис (своё приложение, нужно открыть другое)" else appLabel(cur)
+            val screen = proto.maskPhones(proto.render(els))
+            feedback = Feedback("🤖 Шаг ${st.step + 1}: смотрю на экран…", quick = listOf("Стоп"))
+            val r = gpt.complete(
+                listOf("system" to proto.systemPrompt(), "user" to proto.stepPrompt(st.goal, app, screen, st.history)),
+                maxTokens = 80,
+            )
+            val raw = r.text ?: return finishAgent("Остановился: ${r.error}.", bring = true)
+            val action = proto.parse(raw)
+            if (action == null) { st = st.add("ответ ИИ не понят: ${raw.take(40)}"); continue }
+            val what = proto.describe(action, els)
+            val sig = raw.trim().lowercase()
+            repeats = if (sig == lastSig) repeats + 1 else 0
+            lastSig = sig
+            if (repeats >= 2) return finishAgent("Похоже, я застрял на одном месте. Доделайте, пожалуйста, сами или скажите иначе.", bring = true)
+            feedback = Feedback("🤖 Шаг ${st.step + 1}: $what", quick = listOf("Стоп"))
+            when (action) {
+                is ru.ivan.jarvis.parse.AgentAction.Done ->
+                    return finishAgent(action.summary.ifBlank { "Готово." }, bring = false)
+                is ru.ivan.jarvis.parse.AgentAction.Ask -> {
+                    a11y.bringJarvis()
+                    pending = Pending.AgentAnswer(st, cur.takeIf { it != myPkg })
+                    answer(action.question, followUp = true)
+                    return
+                }
+                is ru.ivan.jarvis.parse.AgentAction.Tap -> {
+                    val label = els.firstOrNull { it.index == action.index }?.label
+                    if (label == null) { st = st.add("номера ${action.index} нет на экране"); continue }
+                    if (proto.risky(label)) {
+                        a11y.bringJarvis()
+                        pending = Pending.AgentConfirm(st, label, cur.takeIf { it != myPkg })
+                        answer("Дошёл до кнопки «${label.take(40)}». Нажать? Скажите «да» или «нет».", followUp = true)
+                        return
+                    }
+                    val ok = a11y.tapIndex(action.index)
+                    st = st.add(if (ok) "нажал «${label.take(40)}»" else "не нажалось «${label.take(40)}»")
+                }
+                is ru.ivan.jarvis.parse.AgentAction.Type -> {
+                    val ok = a11y.typeIndex(action.index, action.text)
+                    st = st.add(if (ok) "ввёл «${action.text.take(40)}»" else "не удалось ввести в №${action.index}")
+                }
+                is ru.ivan.jarvis.parse.AgentAction.Scroll -> {
+                    val ok = a11y.scroll(action.down)
+                    st = st.add(if (ok) (if (action.down) "пролистал вниз" else "пролистал вверх") else "листать некуда")
+                }
+                is ru.ivan.jarvis.parse.AgentAction.Open -> {
+                    val res = phone.perform(PhoneAction.OpenApp(action.app), canAsk = false)
+                    st = st.add(if (res.message.startsWith("Открываю")) "открыл ${action.app}" else "не открылось ${action.app}: ${res.message.take(60)}")
+                    kotlinx.coroutines.delay(1500)
+                }
+                ru.ivan.jarvis.parse.AgentAction.Back -> { a11y.global(ru.ivan.jarvis.parse.ScreenGlobal.BACK); st = st.add("назад") }
+                ru.ivan.jarvis.parse.AgentAction.Home -> { a11y.global(ru.ivan.jarvis.parse.ScreenGlobal.HOME); st = st.add("домой") }
+                ru.ivan.jarvis.parse.AgentAction.Wait -> st = st.add("подождал")
+            }
+            kotlinx.coroutines.delay(1600)
+        }
+        finishAgent("Сделал ${proto.MAX_STEPS} шагов, но до конца не дошёл. Посмотрите экран и скажите, что дальше.", bring = false)
+    }
+
+    private fun finishAgent(text: String, bring: Boolean) {
+        if (bring) ru.ivan.jarvis.actions.JarvisAccessibility.bringJarvis()
+        answer("🤖 $text", source = "🤖 Агент · ${gpt.modelLabel}")
+    }
+
+    private fun appLabel(pkg: String): String = runCatching {
+        val pm = appContext.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
 
     // ---------- СДВГ-коуч ----------
 
@@ -1197,6 +1351,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Автосервис: «новый клиент Петров, Солярис, замена колодок», «Солярис Петрова готов», «заказал колодки на Солярис», " +
             "«что в работе», «приход 15 тысяч от Петрова», «касса за неделю». " +
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок, «есть ли в наличии колодки на Солярис», «что пишут на Драйве про стук в подвеске Тигуана», «найди на форумах почему троит Логан». " +
+            "Сам делаю в приложениях (нужны спецвозможности и ИИ): «открой Озон и найди масляный фильтр Mann», «в ютубе включи Высоцкого», «сделай сам: напиши Саше в телеграм, что задерживаюсь». Перед отправкой и оплатой спрошу «да». «Стоп» — остановлюсь. " +
             "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
             "«выгрузка: …» (всё из головы разложу по делам), «не могу начать» (правило 5 минут), «перенеси всё несделанное на завтра», «разгрузи день». " +
             "Для работы: «фокус 25 минут», «что мне сейчас делать», «сделал …», «перенеси … на завтра», «удали …», «итоги дня». " +
@@ -1210,6 +1365,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NO = Regex("^(нет|не\\s+надо|не\\s+нужно|отмена|отмени|не\\s+отправляй|никогда|не\\s+напоминай|стоп)(?![\\p{L}])")
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
+        private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
         private val STEP_QUICK = listOf("Дальше", "Фокус 5 минут", "Все шаги", "Хватит шагов")
         private const val NO_STEPS = "Сейчас нет задачи по шагам. Скажите: «разбей <задача> на шаги»."
         private val PRAISE = listOf("Отлично!", "Супер!", "Молодец!", "Так держать!", "Есть!")

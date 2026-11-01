@@ -117,6 +117,80 @@ class JarvisAccessibility : AccessibilityService() {
             return sb.toString().take(maxChars).trim().ifBlank { null }
         }
 
+        // ---------- Агент: экран списком элементов ----------
+        @Volatile private var agentNodes: Map<Int, AccessibilityNodeInfo> = emptyMap()
+
+        /** Пакет приложения на экране сейчас. */
+        fun currentPackage(): String? = instance?.rootInActiveWindow?.packageName?.toString()
+
+        /**
+         * Снимок экрана для ИИ: видимые кнопки, поля и тексты с номерами.
+         * Узлы запоминаются, чтобы потом нажать по номеру. Никуда не сохраняется.
+         */
+        fun snapshot(max: Int = 70): List<ru.ivan.jarvis.parse.UiElement>? {
+            val root = instance?.rootInActiveWindow ?: return null
+            val out = ArrayList<ru.ivan.jarvis.parse.UiElement>()
+            val nodes = HashMap<Int, AccessibilityNodeInfo>()
+            val seen = HashSet<String>()
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var visited = 0
+            while (queue.isNotEmpty() && visited < 2000 && out.size < max) {
+                val n = queue.removeFirst()
+                visited++
+                for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
+                if (!n.isVisibleToUser) continue
+                val text = n.text?.toString()?.trim().orEmpty()
+                val desc = n.contentDescription?.toString()?.trim().orEmpty()
+                val hint = if (Build.VERSION.SDK_INT >= 26) n.hintText?.toString()?.trim().orEmpty() else ""
+                val idTail = n.viewIdResourceName?.substringAfterLast('/')?.replace('_', ' ').orEmpty()
+                val kind = when {
+                    n.isEditable -> "поле"
+                    n.isCheckable -> if (n.isChecked) "переключатель вкл" else "переключатель выкл"
+                    n.isClickable || n.isLongClickable -> "кнопка"
+                    text.isNotEmpty() || desc.isNotEmpty() -> "текст"
+                    else -> continue
+                }
+                var label = listOf(text, desc, hint).filter { it.isNotEmpty() }.distinct().joinToString(" / ")
+                if (label.isEmpty()) label = idTail
+                if (label.isEmpty()) continue
+                label = label.replace('\n', ' ').take(80)
+                if (kind == "текст" && !seen.add(label)) continue
+                val idx = out.size + 1
+                out += ru.ivan.jarvis.parse.UiElement(idx, kind, label)
+                nodes[idx] = n
+            }
+            agentNodes = nodes
+            return out
+        }
+
+        fun tapIndex(index: Int): Boolean {
+            val n = agentNodes[index] ?: return false
+            n.refresh()
+            return clickNode(n) || n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        fun typeIndex(index: Int, text: String): Boolean {
+            val n = agentNodes[index] ?: return false
+            n.refresh()
+            if (!n.isFocused) n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val args = android.os.Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+
+        /** Вернуть Джарвиса на экран (службе спецвозможностей Android это разрешает). */
+        fun bringJarvis(): Boolean {
+            val s = instance ?: return false
+            return runCatching {
+                s.startActivity(
+                    Intent(s, ru.ivan.jarvis.ui.MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+                )
+            }.isSuccess
+        }
+
         fun scroll(forward: Boolean): Boolean {
             val root = instance?.rootInActiveWindow ?: return false
             val node = findFirst(root) { it.isScrollable } ?: return false

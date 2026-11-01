@@ -31,7 +31,7 @@ class Prefs(context: Context) {
     /** «О себе» — короткий текст, который ИИ учитывает в каждом ответе. */
     var about: String get() = str("about", ""); set(v) = p.edit().putString("about", v.take(400)).apply()
     var aiFirst: Boolean get() = bool("ai_first", true); set(v) = setBool("ai_first", v)
-    var dailyTokenLimit: Int get() = p.getInt("daily_limit", 20000); set(v) = p.edit().putInt("daily_limit", v).apply()
+    var dailyTokenLimit: Int get() = p.getInt("daily_limit", 50000); set(v) = p.edit().putInt("daily_limit", v).apply()
     val yandexReady: Boolean get() = apiKey.isNotBlank() && folderId.isNotBlank()
 
     val tokensToday: Int
