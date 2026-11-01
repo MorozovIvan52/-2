@@ -65,6 +65,8 @@ private sealed interface Pending {
     data class ReplyConfirm(val msg: ru.ivan.jarvis.messages.InMessage, val text: String) : Pending
     /** Ждём поток мыслей для «выгрузки из головы». */
     data object Dump : Pending
+    /** «Поставь задачу» без текста — ждём, какую. */
+    data object TaskText : Pending
     /** ИИ предложил действия — выполняем только после «да». */
     data class AiActions(val cmds: List<String>) : Pending
     /** Агент ждёт «да» перед необратимым нажатием (отправить, оплатить…). */
@@ -261,6 +263,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        // 0. Шеф явно ставит задачу: «поставь задачу позвонить в банк в пятницу» — создаём сразу, без ИИ и вопросов
+        ru.ivan.jarvis.parse.TaskCreate.parse(text)?.let { rest ->
+            if (rest.isBlank()) {
+                pending = Pending.TaskText
+                answer("Какую задачу поставить, шеф?", followUp = true)
+            } else viewModelScope.launch { createTask(rest) }
+            return
+        }
         if (PHOTO.containsMatchIn(text.trim())) {
             cameraTick++
             answer("Наведите камеру на этикетку или VIN и сделайте фото.", speak = fromVoice)
@@ -374,6 +384,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (ru.ivan.jarvis.parse.SearchParse.needsWeb(text) && (CommandParser.parse(text) as? Command.Save)?.due == null) {
                 webAnswer(text)
                 return@launch
+            }
+            // 3а. «Надо купить масло», «нужно позвонить в банк завтра» — это задача шефа, ставим сразу
+            NEED.find(text.trim())?.let { m ->
+                if (!text.trim().endsWith("?")) { createTask(m.groupValues.last()); return@launch }
             }
             // 3. Вопросы и сложные просьбы — ИИ (если подключён)
             // Недавно говорили с ИИ (3 мин) — продолжение разговора тоже идёт ему: «а если завтра?»
@@ -696,6 +710,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return true
             }
             is Pending.Inbox -> return handleInbox(p, t, text)
+            Pending.TaskText -> {
+                if (no) { answer("Хорошо, шеф, не ставлю."); return true }
+                viewModelScope.launch { createTask(text.trim()) }
+                return true
+            }
             is Pending.AiActions -> {
                 if (yes) { viewModelScope.launch { runAiActions(p.cmds) }; return true }
                 if (no) { answer("Понял, шеф, ничего не делаю."); return true }
@@ -1052,6 +1071,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             (if (first.allDay) "." else ", в ${timeOf(first)} (через ${minutesLabel(left)}).")
         val tail = next?.let { " Потом: ${it.title}." } ?: ""
         return "$head$tail Начните с первого маленького шага или скажите «разбей на шаги»."
+    }
+
+    // ---------- Задачи ----------
+
+    /**
+     * Создать задачу сразу. Человек в дательном («Саше поменять масло») — это поручение мастеру.
+     * Со сроком — напоминание на срок; без срока — задача на сегодня (видна в «что делать», утреннем плане и календаре).
+     */
+    private suspend fun createTask(rest: String) {
+        ru.ivan.jarvis.parse.DelegateParser.delegation("поручи $rest")?.let { d ->
+            if (d.who.isNotBlank() && Regex("^\\p{Lu}").containsMatchIn(rest.trim())) { runDelegate(d, afterPermission = false); return }
+        }
+        val (urgent, clean) = ru.ivan.jarvis.parse.DelegateParser.priority(rest).let { (u, t) -> u to t.ifBlank { rest } }
+        val c = CommandParser.parse("напомни $clean") as? Command.Save
+        val title = ru.ivan.jarvis.parse.TaskCreate.cleanTitle(c?.title?.takeIf { it.isNotBlank() && it != "Напоминание" } ?: clean)
+        val due = c?.due ?: LocalDate.now().atTime(9, 0)
+        val allDay = c?.due == null || c.allDay
+        val item = Item(
+            type = ItemType.REMINDER, title = title, source = "задача: $rest",
+            dueAt = due.toMillis(), allDay = allDay, repeat = c?.repeat ?: ru.ivan.jarvis.data.Repeat.NONE,
+            priority = if (urgent) 1 else 0,
+        )
+        val saved = item.copy(id = dao.insert(item))
+        ReminderScheduler.schedule(appContext, saved)
+        syncCal(saved)
+        val whenText = if (c?.due == null) "на сегодня" else describeDue(saved)
+        answer("Задача поставлена, шеф: $title — $whenText" + (if (urgent) ", срочная" else "") + ".", saved.id,
+            quick = if (c?.due == null) listOf("Перенеси $title на завтра", "Что делать?") else listOf("Что делать?"))
     }
 
     // ---------- Проценка запчастей ----------
@@ -1498,6 +1545,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "Ищу в интернете и отвечаю голосом: цены, моменты затяжки, объёмы масла, коды ошибок, «есть ли в наличии колодки на Солярис», «что пишут на Драйве про стук в подвеске Тигуана», «найди на форумах почему троит Логан». " +
             "Фото: «сфоткай артикул» или кнопка 📷 — прочитаю артикул (и сразу проценка) или VIN (марка и год). " +
             "Умные ответы: на сообщение клиента готовлю 2 варианта ответа с учётом его заказа — отправка одной кнопкой из уведомления. " +
+            "Задачи: «поставь задачу позвонить в банк в пятницу», «задача: заказать масло» — ставлю сразу (без срока — на сегодня); «поставь задачу Саше поменять масло» — поручение мастеру. " +
             "Проценка запчастей: «проценка Манн W 75/3», «где купить колодки TRW GDB1330» — сначала ЗетЗап по Нижнему, потом Автотрейд, Росско, Парт-Ком, Иксора, Топдеталь; аналоги, если дешевле. «Найди болячку Солярис 2015». «Сводка» — итоги и что дальше. " +
             "Сам делаю в приложениях (нужны спецвозможности и ИИ): «открой Озон и найди масляный фильтр Mann», «в ютубе включи Высоцкого», «сделай сам: напиши Саше в телеграм, что задерживаюсь». Перед отправкой и оплатой спрошу «да». «Стоп» — остановлюсь. " +
             "СДВГ-помощь: «разбей ремонт гаража на шаги» (покажу по одному, говорите «дальше»), «с чего начать отчёт», " +
@@ -1514,6 +1562,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private val NOTE_WORDS = Regex("(запиши|заметк|запомни|сохрани|иде[яюи]|список|мысль|в заметки)", RegexOption.IGNORE_CASE)
         private val INBOX = Regex("^(джарвис[, ]*)?(разбери|разберем|разберём|разобрать|давай\\s+разберем|разбор)\\s+(входящ\\p{L}*|заметк\\p{L}*)|^(что\\s+во\\s+входящих|входящие)$", RegexOption.IGNORE_CASE)
         private val PHOTO = Regex("^(джарвис[, ]*)?(сфоткай|сфотографируй|фото|сними|распознай|прочитай|считай)\\s+(артикул|этикетк\\p{L}*|vin|вин|вин-код|номер\\s+детали|запчаст\\p{L}*)", RegexOption.IGNORE_CASE)
+        private val NEED = Regex("^(джарвис[, ]*)?(мне\\s+)?(надо|нужно|не\\s+забыть|необходимо)\\s+(.{3,})$", RegexOption.IGNORE_CASE)
         private val STEPS_ASK = Regex("(разб|раздел|по\\s+шагам|шаг|с\\s+чего\\s+начать|как\\s+начать|план)", RegexOption.IGNORE_CASE)
         private val SUMMARY = Regex("^(джарвис[, ]*)?(сводка|сводку|дай\\s+сводку|сводка\\s+дня)[.!]?$", RegexOption.IGNORE_CASE)
         private val AGENT_STOP = Regex("^(джарвис[, ]*)?(стоп|хватит|отмена|остановись|прекрати|не\\s+надо)", RegexOption.IGNORE_CASE)
