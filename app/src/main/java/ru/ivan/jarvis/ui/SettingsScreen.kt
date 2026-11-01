@@ -150,10 +150,17 @@ fun SettingsScreen(vm: MainViewModel) {
             )
         }
 
+        Section("Проценка запчастей") {
+            PartsBlock(vm)
+        }
         Section("Управление экраном") {
             ScreenControlBlock()
         }
         Section("Без рук и сообщения") {
+            var smart by remember { mutableStateOf(vm.prefs.smartReplies) }
+            SwitchRow("Умные ответы: на сообщение клиента готовлю 2 варианта, отправка одной кнопкой из уведомления", smart) {
+                smart = it; vm.prefs.smartReplies = it
+            }
             HandsFreeBlock(vm)
         }
 
@@ -225,7 +232,7 @@ fun SettingsScreen(vm: MainViewModel) {
                     onValueChangeFinished = { prefs.pitch = pitch; vm.speaker.applySettings() })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { vm.speaker.say("Добрый вечер. Я Джарвис, чем могу помочь?") }) { Text("Прослушать") }
+                OutlinedButton(onClick = { vm.speaker.say("Добрый день, шеф. Джарвис на связи, чем могу помочь?") }) { Text("Прослушать") }
                 if (!yandexVoiceOn) {
                     OutlinedButton(onClick = {
                         open(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.tts")))
@@ -456,5 +463,42 @@ private fun SwitchRow(text: String, checked: Boolean, onChange: (Boolean) -> Uni
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Проверка сайтов проценки, адреса поиска и отладка вёрстки. */
+@Composable
+private fun PartsBlock(vm: MainViewModel) {
+    val context = LocalContext.current
+    var article by remember { mutableStateOf("W753") }
+    var result by remember { mutableStateOf("") }
+    var showUrls by remember { mutableStateOf(false) }
+    Text(
+        "Сначала ЗетЗап (nn.zzap.ru), если пусто — Автотрейд, Росско, Парт-Ком, Иксора, Топдеталь. Только открытые страницы, без логинов и обхода капч. Результат хранится 4 часа.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedTextField(value = article, onValueChange = { article = it }, label = { Text("Тестовый артикул") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    OutlinedButton(onClick = { vm.testPartsSources(article) { result = it } }, modifier = Modifier.fillMaxWidth()) { Text("Проверить источники") }
+    if (result.isNotBlank()) Text(result, style = MaterialTheme.typography.bodySmall)
+    OutlinedButton(onClick = {
+        val cm = context.getSystemService(ClipboardManager::class.java)
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Отладка проценки", ru.ivan.jarvis.parts.PartsDebug.export(context)))
+        result = "Отладка скопирована. Пришлите её разработчику, чтобы поправить разбор сайта."
+    }, modifier = Modifier.fillMaxWidth()) { Text("Скопировать отладку") }
+    androidx.compose.material3.TextButton(onClick = { showUrls = !showUrls }) { Text(if (showUrls) "Скрыть адреса сайтов" else "Адреса поиска сайтов (если сайт поменял адрес)") }
+    if (showUrls) {
+        Text("{a} — артикул, {b} — бренд. Пусто — встроенный адрес.", style = MaterialTheme.typography.bodySmall)
+        ru.ivan.jarvis.parts.core.Sites.all(object : ru.ivan.jarvis.parts.core.PageFetcher {
+            override suspend fun get(url: String, js: Boolean) = ru.ivan.jarvis.parts.core.Page(0, "")
+        }).forEach { p ->
+            var v by remember { mutableStateOf(vm.prefs.partsUrl(p.id).orEmpty()) }
+            OutlinedTextField(
+                value = v,
+                onValueChange = { v = it; vm.prefs.setPartsUrl(p.id, it) },
+                label = { Text(p.title) },
+                placeholder = { Text(p.searchUrl("{a}", "{b}").replace("%7Ba%7D", "{a}").replace("%7Bb%7D", "{b}"), maxLines = 1) },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }

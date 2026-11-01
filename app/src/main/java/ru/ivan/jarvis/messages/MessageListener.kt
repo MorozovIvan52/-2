@@ -31,28 +31,33 @@ class MessageListener : NotificationListenerService() {
         if (instance === this) instance = null
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification) = capture(sbn)
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        capture(sbn)?.let { SmartReplies.onNew(this, it) }
+    }
 
-    private fun capture(sbn: StatusBarNotification) {
-        val app = appName(sbn.packageName) ?: return
+    /** Возвращает новое сообщение (null — не мессенджер или дубль). */
+    private fun capture(sbn: StatusBarNotification): InMessage? {
+        val app = appName(sbn.packageName) ?: return null
         val n = sbn.notification
-        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return null
         val ex = n.extras
         val title = ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString()
-            ?: ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return
+            ?: ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return null
         // Переписка: берём последнее сообщение из MessagingStyle, иначе обычный текст
         val msgs = ex.getParcelableArray(Notification.EXTRA_MESSAGES)
         val last = msgs?.lastOrNull() as? Bundle
-        val text = last?.getCharSequence("text")?.toString() ?: ex.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: return
+        val text = last?.getCharSequence("text")?.toString() ?: ex.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: return null
         val sender = last?.getCharSequence("sender")?.toString()?.takeIf { it.isNotBlank() && !title.contains(it) }
             ?.let { "$title ($it)" } ?: title
-        if (text.isBlank() || Regex("^\\d+ (новых|новое|new)", RegexOption.IGNORE_CASE).containsMatchIn(text)) return
-        synchronized(store) {
-            store.removeAll { it.key == sbn.key && it.text == text }
-            store.add(0, InMessage(app, sender, text, sbn.postTime, sbn.key))
-            while (store.size > 50) store.removeAt(store.size - 1)
-        }
+        if (text.isBlank() || Regex("^\\d+ (новых|новое|new)", RegexOption.IGNORE_CASE).containsMatchIn(text)) return null
+        val m = InMessage(app, sender, text, sbn.postTime, sbn.key)
         notifications[sbn.key] = sbn
+        synchronized(store) {
+            val dup = store.removeAll { it.key == sbn.key && it.text == text }
+            store.add(0, m)
+            while (store.size > 50) store.removeAt(store.size - 1)
+            return if (dup) null else m
+        }
     }
 
     private fun appName(pkg: String): String? = when {

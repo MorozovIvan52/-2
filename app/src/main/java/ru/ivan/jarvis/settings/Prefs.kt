@@ -31,7 +31,7 @@ class Prefs(context: Context) {
     /** «О себе» — короткий текст, который ИИ учитывает в каждом ответе. */
     var about: String get() = str("about", ""); set(v) = p.edit().putString("about", v.take(400)).apply()
     var aiFirst: Boolean get() = bool("ai_first", true); set(v) = setBool("ai_first", v)
-    var dailyTokenLimit: Int get() = p.getInt("daily_limit", 20000); set(v) = p.edit().putInt("daily_limit", v).apply()
+    var dailyTokenLimit: Int get() = p.getInt("daily_limit", 50000); set(v) = p.edit().putInt("daily_limit", v).apply()
     val yandexReady: Boolean get() = apiKey.isNotBlank() && folderId.isNotBlank()
 
     val tokensToday: Int
@@ -53,6 +53,13 @@ class Prefs(context: Context) {
     var breakMinutes: Int get() = p.getInt("break_min", 5); set(v) = p.edit().putInt("break_min", v).apply()
     var focusPhase: String get() = str("focus_phase", ""); set(v) = setStr("focus_phase", v)
     var focusEndAt: Long get() = p.getLong("focus_end", 0); set(v) = p.edit().putLong("focus_end", v).apply()
+    /** Умные ответы на сообщения: 2 варианта в уведомлении, отправка одной кнопкой. */
+    var smartReplies: Boolean get() = bool("smart_replies", true); set(v) = setBool("smart_replies", v)
+    /** Адрес поиска сайта проценки из настроек ({a} — артикул, {b} — бренд); пусто — встроенный. */
+    fun partsUrl(site: String): String? = str("parts_url_$site", "").ifBlank { null }
+    fun setPartsUrl(site: String, v: String) = setStr("parts_url_$site", v.trim())
+    /** Задача, которую проходим по шагам (StepPlan.encode), пусто — нет. */
+    var stepPlan: String get() = str("step_plan", ""); set(v) = setStr("step_plan", v)
 
     // Диалог, планы дня, прогресс
     var dialog: Boolean get() = bool("dialog", true); set(v) = setBool("dialog", v)

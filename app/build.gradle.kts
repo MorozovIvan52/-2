@@ -14,8 +14,10 @@ android {
         applicationId = "ru.ivan.jarvis.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "15.0"
+        versionCode = 19
+        versionName = "19.0"
+        // Только ARM (все современные телефоны): без x86-библиотек распознавания фото APK втрое меньше
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         // Ключи Яндекса по умолчанию: подставляются только при сборке приватного репозитория из секретов CI.
         // В коде их нет; без секретов поля пустые и ключ вводится в «Настройках».
         buildConfigField("String", "YANDEX_API_KEY", "\"${System.getenv("YANDEX_API_KEY").orEmpty()}\"")
@@ -63,6 +65,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     implementation("androidx.room:room-runtime:2.6.1")
+    // Разбор HTML страниц проценки (устойчив к кривой вёрстке)
+    implementation("org.jsoup:jsoup:1.18.1")
+    // Распознавание текста на фото этикетки/VIN — на телефоне, без интернета
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
