@@ -963,7 +963,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- СДВГ-коуч ----------
 
-    private fun setSteps(p: StepPlan?) {
+    private fun updateSteps(p: StepPlan?) {
         steps = p
         prefs.stepPlan = p?.encode() ?: ""
     }
@@ -995,7 +995,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } ?: answer(NO_STEPS)
             CoachCommand.StepsStop -> {
                 val p = steps
-                setSteps(null)
+                updateSteps(null)
                 answer(if (p == null) NO_STEPS else "Хорошо, шаги убрал. Задача «${p.task}» осталась в заметках, вернёмся, когда будут силы.")
             }
             is CoachCommand.Dump -> if (cmd.text.isBlank()) {
@@ -1027,7 +1027,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             source = list.mapIndexed { i, st -> "${i + 1}. $st" }.joinToString("\n"),
         )
         val id = dao.insert(note)
-        setSteps(StepPlan(task, list, 0, id))
+        updateSteps(StepPlan(task, list, 0, id))
         val head = intro.takeIf { it.isNotBlank() }?.let { "$it " } ?: ""
         answer(
             "${head}Разбил на ${list.size} ${stepsWord(list.size)}. Шаг 1: ${list[0]}. Скажите «дальше», когда сделаете.",
@@ -1039,11 +1039,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val p = steps ?: return answer(NO_STEPS)
         val n = p.next()
         if (!n.finished) {
-            setSteps(n)
+            updateSteps(n)
             answer("${PRAISE.random()} ${n.progress.replaceFirstChar { it.uppercase() }}: ${n.current}.", quick = STEP_QUICK)
             return
         }
-        setSteps(null)
+        updateSteps(null)
         val count = prefs.markDone()
         viewModelScope.launch { dao.get(p.noteId)?.let { dao.update(it.copy(done = true)) } }
         answer("${PRAISE.random()} Все шаги пройдены, «${p.task}» сделано. Сегодня уже $count. Отдохните пару минут.")
